@@ -83,8 +83,8 @@ for cfg in "$PWD/config.json" "$PWD/.deepseek-proxy.json" "$CONFIG"; do
     fi
 done
 
-# If no key found anywhere, ask the user
-if [ -z "$DEEPSEEK_API_KEY" ]; then
+# If no key found anywhere, ask the user (skip in direct mode)
+if [ -z "$DEEPSEEK_API_KEY" ] && ! echo "$@" | grep -q "\-\-direct"; then
     echo ""
     echo "  AISmush - First Time Setup"
     echo "  ──────────────────────────"
@@ -127,11 +127,22 @@ if [ -z "$DEEPSEEK_API_KEY" ]; then
     echo ""
 fi
 
+# Handle --direct flag
+AISMUSH_FLAGS=""
+CLAUDE_ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--direct" ]; then
+        AISMUSH_FLAGS="--direct"
+    else
+        CLAUDE_ARGS+=("$arg")
+    fi
+done
+
 # Kill stale proxy
 lsof -ti:$PORT 2>/dev/null | xargs kill -9 2>/dev/null || true
 
 # Start proxy silently
-aismush > "$LOGFILE" 2>&1 &
+aismush $AISMUSH_FLAGS > "$LOGFILE" 2>&1 &
 PROXY_PID=$!
 sleep 0.3
 
@@ -156,7 +167,7 @@ except: pass
 }
 trap cleanup EXIT INT TERM
 
-ANTHROPIC_BASE_URL="http://localhost:$PORT" claude "$@" || true
+ANTHROPIC_BASE_URL="http://localhost:$PORT" claude "${CLAUDE_ARGS[@]}" || true
 WRAPPER
 
 chmod +x "$INSTALL_DIR/aismush-start"
