@@ -26,6 +26,14 @@ AISmush automatically detects what kind of work each turn requires:
 
 ## Features
 
+### Project Scanner (`aismush --scan`)
+- Scans your codebase and generates optimized Claude Code agents
+- Detects languages, frameworks, key files, and project patterns
+- Creates task-specific agents: code-reviewer, debugger, language experts, test-runner, explorer
+- Each agent assigned the optimal model: Haiku for cheap tasks, Sonnet for complex work
+- Generates `.claude/agents/` directory — ready to use immediately
+- One command: `aismush --scan /path/to/project`
+
 ### Smart Model Routing
 - Automatically routes each turn to Claude or DeepSeek based on the task
 - Heuristic-based (zero latency overhead — no extra API calls for classification)
@@ -276,9 +284,11 @@ A: Run `aismush --status` from any terminal, or visit `http://localhost:1849/das
 
 ```bash
 aismush              # Start the proxy server
+aismush --scan       # Scan codebase, generate optimized agents
 aismush --version    # Show version
 aismush --status     # Check if running, show quick stats
 aismush --config     # Show current configuration
+aismush --upgrade    # Upgrade to latest version
 aismush --help       # Show help
 
 aismush-start        # Start proxy + launch Claude Code (recommended)

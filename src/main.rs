@@ -7,6 +7,7 @@ mod db;
 mod forward;
 mod memory;
 mod router;
+mod scan;
 mod state;
 mod tokens;
 
@@ -56,6 +57,7 @@ async fn main() {
         println!("  aismush --status     Check if proxy is running");
         println!("  aismush --config     Show current configuration");
         println!("  aismush --upgrade    Upgrade to latest version");
+        println!("  aismush --scan       Scan codebase and generate optimized agents");
         println!();
         println!("The proxy reads config from:");
         println!("  1. Environment variables (DEEPSEEK_API_KEY, PROXY_PORT)");
@@ -95,6 +97,10 @@ async fn main() {
     }
     if args.iter().any(|a| a == "--upgrade") {
         upgrade().await;
+        return;
+    }
+    if args.iter().any(|a| a == "--scan") {
+        run_scan(&args).await;
         return;
     }
 
@@ -512,6 +518,64 @@ async fn report_stats(state: &Arc<ProxyState>) {
             warn!(error = %e, "Stats report failed");
         }
     }
+}
+
+/// Scan a project and generate optimized Claude Code agents.
+async fn run_scan(args: &[String]) {
+    // Get project path (argument after --scan, or current directory)
+    let project_path = args.iter()
+        .position(|a| a == "--scan")
+        .and_then(|i| args.get(i + 1))
+        .map(|p| std::path::PathBuf::from(p))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+
+    println!();
+    println!("  AISmush Scanner v{}", VERSION);
+    println!("  ─────────────────────────");
+    println!("  Scanning: {}", project_path.display());
+    println!();
+
+    // Scan the project
+    let profile = scan::scan_project(&project_path);
+
+    println!("  Files:      {}", profile.total_files);
+    println!("  Languages:  {}", profile.languages.join(", "));
+    println!("  Frameworks: {}", profile.frameworks.join(", "));
+    println!("  Key files:  {}", profile.key_files.len());
+    println!();
+
+    // Generate agents
+    let agents = scan::generate_agents(&profile);
+    println!("  Generating {} agents:", agents.len());
+    for (path, _) in &agents {
+        let name = path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        println!("    - {}", name);
+    }
+    println!();
+
+    // Write to disk
+    let written = scan::write_agents(&agents);
+    println!("  Written {} agent files to .claude/agents/", written);
+    println!();
+
+    // Show model routing
+    println!("  Cost optimization:");
+    for (path, content) in &agents {
+        let name = path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let model = if content.contains("model: haiku") {
+            "haiku (fast, cheap)"
+        } else if content.contains("model: sonnet") {
+            "sonnet (balanced)"
+        } else if content.contains("model: opus") {
+            "opus (max reasoning)"
+        } else {
+            "inherit"
+        };
+        println!("    {} → {}", name, model);
+    }
+    println!();
+    println!("  Done! Agents are ready. Run 'aismush-start' to use them.");
+    println!();
 }
 
 /// Self-upgrade by running the install script.
