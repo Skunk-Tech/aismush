@@ -290,6 +290,12 @@ async fn handle(
         }
     };
 
+    // Debug: dump request bodies for comparison
+    let debug_dir = config::ProxyConfig::load().data_dir.join("debug");
+    let _ = std::fs::create_dir_all(&debug_dir);
+    let req_num = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let _ = std::fs::write(debug_dir.join(format!("{}-incoming.json", req_num)), &body_bytes);
+
     let mut parsed: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
     let model = parsed.as_ref()
         .and_then(|p| p["model"].as_str())
@@ -297,10 +303,16 @@ async fn handle(
         .to_string();
     let project_path = parsed.as_ref().map(|b| memory::detect_project(b)).unwrap_or_else(|| "default".to_string());
 
-    // ── Compress tool_result blocks (safe for both providers — only modifies
-    //    content strings inside tool_result, never changes message structure) ──
-    let comp_stats = if let Some(ref mut body_val) = parsed {
-        compress::compress_request_body(body_val)
+    // ── Route decision (before any body modification) ──────────────────
+    let route_preview = router::decide(&parsed, &state.config.force_provider);
+
+    // ── Compress tool_result blocks (DeepSeek only — Claude gets original bytes) ──
+    let comp_stats = if route_preview.provider == "deepseek" {
+        if let Some(ref mut body_val) = parsed {
+            compress::compress_request_body(body_val)
+        } else {
+            compress::CompressionStats::default()
+        }
     } else {
         compress::CompressionStats::default()
     };
@@ -319,9 +331,11 @@ async fn handle(
         st.compressed_final_bytes += comp_stats.compressed_bytes as u64;
     }
 
-    // ── Memory injection (safe — prepends to system prompt, never touches messages) ──
-    if let (Some(ref db), Some(ref mut body_val)) = (&state.db, &mut parsed) {
-        memory::inject_memories(db, body_val, &project_path).await;
+    // ── Memory injection (DeepSeek only for now — Claude gets unmodified body) ──
+    if route_preview.provider == "deepseek" {
+        if let (Some(ref db), Some(ref mut body_val)) = (&state.db, &mut parsed) {
+            memory::inject_memories(db, body_val, &project_path).await;
+        }
     }
 
     // ── Route decision ──────────────────────────────────────────────────
@@ -364,6 +378,9 @@ async fn handle(
     } else {
         body_bytes.clone()
     };
+
+    // Debug: dump outgoing body
+    let _ = std::fs::write(debug_dir.join(format!("{}-outgoing-{}.json", req_num, route.provider)), &final_body);
 
     // ── Forward ─────────────────────────────────────────────────────────
     let comp_orig = comp_stats.original_bytes as u64;
