@@ -33,11 +33,12 @@ AISmush automatically detects what kind of work each turn requires:
 - Error recovery detection — switches to Claude when DeepSeek is going in circles
 
 ### Context Compression
-- Strips comments from code in tool results (biggest single savings)
-- Normalizes whitespace (reduces indentation, collapses blank lines)
-- Deduplicates consecutive similar lines (repeated errors/warnings)
-- Truncates oversized tool results (>12K chars)
-- **20-50% token reduction** on typical tool results
+- **Content-type aware** (RTK-inspired) — detects Code, Data (JSON/YAML/XML), Logs, Unknown
+- Strips comments from code (never touches JSON, YAML, or data formats)
+- Normalizes whitespace, collapses blank lines
+- Aggressively deduplicates repeated log lines
+- Smart truncation preserves function signatures in code
+- **20-50% token reduction** on code, safe passthrough for data
 
 ### 4-Tier Context Window Management
 Prevents DeepSeek from choking on long conversations:
@@ -50,12 +51,13 @@ Prevents DeepSeek from choking on long conversations:
 
 For DeepSeek turns only, old tool results are truncated and messages trimmed if needed. Claude turns are never trimmed — this preserves tool_use/tool_result pairs that Claude requires.
 
-### Persistent Memory
-- Extracts key facts from AI responses (architecture decisions, bug fixes, project changes)
-- Stores in local SQLite database
-- Injects relevant memories into new sessions automatically
-- Memories decay over time — recent, frequently-accessed facts surface first
-- **Your AI remembers what you worked on yesterday**
+### Persistent Memory (claude-mem inspired)
+- Automatically captures tool usage: file reads, edits, commands run, searches
+- Captures decisions from assistant responses (created, fixed, changed, configured)
+- Stores observations in local SQLite, grouped by project
+- Injects relevant memories into new sessions — grouped by category (exploration, modification, command, decision)
+- Memories decay over time — recent, frequently-accessed observations surface first
+- **Your AI remembers what files you worked on and what decisions were made**
 
 ### Cost Tracking
 - Real-time cost calculation per request
