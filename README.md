@@ -78,47 +78,52 @@ Open `http://localhost:1849/dashboard` to see:
 
 ## Quick Start
 
-### Download
-
-Grab the latest binary for your platform from [Releases](https://github.com/Skunk-Tech/aismush/releases):
-
-- `aismush-linux-x86_64.tar.gz` — Linux
-- `aismush-macos-x86_64.tar.gz` — macOS (Intel)
-- `aismush-macos-arm64.tar.gz` — macOS (Apple Silicon)
-- `aismush-windows-x86_64.tar.gz` — Windows
-
-### Install
+### One-Line Install (Linux / macOS)
 
 ```bash
-# Linux / macOS
-tar xzf aismush-*.tar.gz
-chmod +x aismush start.sh
-
-# Set your DeepSeek API key
-export DEEPSEEK_API_KEY=sk-your-key
-# Or create config.json: {"apiKey": "sk-your-key"}
-
-# Run
-./start.sh
+curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh | bash
 ```
 
+This downloads the right binary for your platform and installs it to `~/.local/bin/`.
+
+### Setup
+
+```bash
+# Save your DeepSeek API key (one time)
+mkdir -p ~/.hybrid-proxy
+echo '{"apiKey":"sk-your-deepseek-key"}' > ~/.hybrid-proxy/config.json
+
+# Run from any project directory
+aismush-start
+```
+
+That's it. Type `aismush-start` from any project directory and you're coding at 90% lower cost.
+
+### Windows
+
+Download from the [Releases page](https://github.com/Skunk-Tech/aismush/releases), then:
+
 ```powershell
-# Windows
-tar xzf aismush-windows-x86_64.tar.gz
 $env:DEEPSEEK_API_KEY = "sk-your-key"
 .\start.ps1
 ```
 
-That's it. AISmush starts the proxy, launches Claude Code pointed at it, and everything works transparently.
+### Manual Download
+
+| Platform | File |
+|----------|------|
+| Linux x86_64 | `aismush-linux-x86_64.tar.gz` |
+| macOS Intel | `aismush-macos-x86_64.tar.gz` |
+| macOS Apple Silicon | `aismush-macos-arm64.tar.gz` |
+| Windows | `aismush-windows-x86_64.tar.gz` |
 
 ### Build from Source
 
 ```bash
-# Requires Rust 1.70+
 git clone https://github.com/Skunk-Tech/aismush.git
 cd aismush
 cargo build --release
-# Binary at target/release/aismush
+cp target/release/aismush ~/.local/bin/
 ```
 
 ## How It Works
