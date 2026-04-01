@@ -388,8 +388,16 @@ pub async fn run_pipeline(
 
             match call_ai(&gen_prompt, proxy_port, api_key).await {
                 Ok(output) => {
+                    // Write agent immediately as it's generated
+                    let agent_dir = profile.root.join(".claude").join("agents");
+                    std::fs::create_dir_all(&agent_dir).ok();
+                    let agent_path = agent_dir.join(format!("{}.md", name));
+                    if std::fs::write(&agent_path, &output).is_ok() {
+                        eprintln!(" ✓ (written)");
+                    } else {
+                        eprintln!(" ✓ (generated, write failed)");
+                    }
                     agent_outputs.push(format!("AGENT:{}\n{}", name, output));
-                    eprintln!(" ✓");
                 }
                 Err(e) => {
                     eprintln!(" ✗ ({})", e);
@@ -398,36 +406,80 @@ pub async fn run_pipeline(
         }
     }
 
-    // Step 6: Synthesis (truncate each agent to keep prompt manageable)
-    eprintln!("  [5/6] Synthesizing...");
-    let truncated_outputs: Vec<String> = agent_outputs.iter()
-        .map(|o| if o.len() > 2000 { format!("{}...[truncated]", &o[..2000]) } else { o.clone() })
-        .collect();
-    let all_outputs = truncated_outputs.join("\n\n---\n\n");
-    let skills_json = plan.get("skills").map(|s| s.to_string()).unwrap_or("[]".to_string());
-    let combined = format!("Agent Outputs:\n{}\n\nPlanned Skills:\n{}", all_outputs, skills_json);
+    // Step 5: Generate skills one at a time (not a massive synthesis)
+    eprintln!("  [5/6] Generating skills...");
+    let mut skill_entries: Vec<serde_json::Value> = Vec::new();
 
-    let synthesis_prompt = prompts::synthesis_prompt(&combined, &analysis.to_string());
-    let synthesis = match call_ai(&synthesis_prompt, proxy_port, api_key).await {
-        Ok(resp) => match extract_json(&resp) {
-            Ok(s) => {
-                let total_agents = s["agents"].as_array().map(|a| a.len()).unwrap_or(0);
-                let total_skills = s["skills"].as_array().map(|a| a.len()).unwrap_or(0);
-                eprintln!("        Merged → {} agents, {} skills", total_agents, total_skills);
-                s
+    if let Some(skills) = plan["skills"].as_array() {
+        for skill in skills {
+            let name = skill["name"].as_str().unwrap_or("unknown");
+
+            // Skip if exists
+            if existing.skills.iter().any(|s| s == name) {
+                eprintln!("        Skipping skill {} (exists)", name);
+                continue;
+            }
+
+            let desc = skill["description"].as_str().unwrap_or("");
+            let cmds = skill["commands"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("\n- "))
+                .unwrap_or_default();
+
+            let content = format!("---\nname: {}\ndescription: {}\n---\n\n## Commands\n- {}\n", name, desc, cmds);
+            skill_entries.push(serde_json::json!({ "name": name, "content": content }));
+
+            // Write immediately
+            let skill_dir = profile.root.join(".claude").join("skills").join(name);
+            std::fs::create_dir_all(&skill_dir).ok();
+            let _ = std::fs::write(skill_dir.join("SKILL.md"), &content);
+            eprintln!("        Created skill: {}", name);
+        }
+    }
+
+    // Step 6: Generate CLAUDE.md (single focused AI call)
+    eprintln!("  [6/6] Generating CLAUDE.md...");
+    let claude_md = if existing.has_claude_md {
+        eprintln!("        Skipping (exists, use --force to overwrite)");
+        None
+    } else {
+        let agent_names: Vec<String> = agent_outputs.iter()
+            .filter_map(|o| o.strip_prefix("AGENT:").and_then(|r| r.split('\n').next()).map(|s| s.to_string()))
+            .collect();
+
+        let claudemd_prompt = format!(
+            "Generate a CLAUDE.md file for this project.\n\nProject Analysis:\n{}\n\nAgents configured: {}\n\nThe CLAUDE.md should cover:\n- What this project does (1-2 paragraphs)\n- Tech stack\n- Quick start commands (build, test, run)\n- Key architectural patterns\n- Important conventions\n- File structure overview\n\nRespond with ONLY the markdown content, no JSON wrapping.",
+            analysis.to_string(),
+            agent_names.join(", ")
+        );
+
+        match call_ai(&claudemd_prompt, proxy_port, api_key).await {
+            Ok(content) => {
+                eprintln!("        Generated CLAUDE.md");
+                Some(content)
             }
             Err(e) => {
-                eprintln!("        Synthesis JSON parse failed: {}", e);
-                eprintln!("        Writing raw agent outputs instead...");
-                build_fallback_synthesis(&agent_outputs, &plan)
+                eprintln!("        Failed: {}", e);
+                None
             }
         }
-        Err(e) => {
-            eprintln!("        Synthesis call failed: {}", e);
-            eprintln!("        Writing raw agent outputs instead...");
-            build_fallback_synthesis(&agent_outputs, &plan)
-        }
     };
+
+    // Build synthesis result from what we generated
+    let synthesis = serde_json::json!({
+        "agents": agent_outputs.iter().filter_map(|o| {
+            let rest = o.strip_prefix("AGENT:")?;
+            let mut parts = rest.splitn(2, '\n');
+            let name = parts.next()?.trim();
+            let content = parts.next()?.trim();
+            Some(serde_json::json!({"name": name, "content": content}))
+        }).collect::<Vec<_>>(),
+        "skills": skill_entries,
+        "claude_md": claude_md.unwrap_or_default(),
+    });
+
+    let total_agents = synthesis["agents"].as_array().map(|a| a.len()).unwrap_or(0);
+    let total_skills = synthesis["skills"].as_array().map(|a| a.len()).unwrap_or(0);
+    eprintln!("        Total: {} agents, {} skills", total_agents, total_skills);
 
     Ok(ScanResult {
         analysis,
