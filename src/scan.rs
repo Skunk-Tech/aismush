@@ -207,15 +207,17 @@ pub async fn call_ai(prompt: &str, proxy_port: u16) -> Result<String, String> {
 
     let url = format!("http://localhost:{}/v1/messages", proxy_port);
 
+    let body_str = body.to_string();
     let output = tokio::process::Command::new("curl")
         .args([
-            "-sf",
+            "-sS",          // silent but show errors
+            "--max-time", "60",
             "-X", "POST",
             &url,
             "-H", "Content-Type: application/json",
             "-H", "anthropic-version: 2023-06-01",
             "-H", "x-api-key: scan-via-proxy",
-            "-d", &body.to_string(),
+            "-d", &body_str,
         ])
         .output()
         .await
@@ -223,7 +225,12 @@ pub async fn call_ai(prompt: &str, proxy_port: u16) -> Result<String, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("AI call failed: {}", stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!("AI call failed (exit {}): stderr={} stdout={}",
+            output.status.code().unwrap_or(-1),
+            stderr.chars().take(200).collect::<String>(),
+            stdout.chars().take(200).collect::<String>(),
+        ));
     }
 
     let response: serde_json::Value = serde_json::from_slice(&output.stdout)
