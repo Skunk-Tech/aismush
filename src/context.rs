@@ -1,158 +1,201 @@
-//! Context Window Management — 4-tier graduated approach.
+//! Context Window Management — graduated approach.
 //!
-//! Prevents DeepSeek context overflow and optimizes token usage.
+//! Handles the mismatch between Claude (200K) and DeepSeek (64K effective).
+//! Never blocks the user — always finds a way to make the request work.
 
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::tokens;
 
-/// Context management result.
+/// What the context manager decided to do.
 pub struct ContextAction {
-    /// Should we override the routing decision?
+    /// Override routing? None = let router decide.
     pub force_provider: Option<&'static str>,
-    /// Reason for context action (for logging)
+    /// What we did.
     pub action: &'static str,
-    /// Truncation limit for tool results (default 12000)
-    pub truncation_limit: usize,
+    /// Whether we modified the body (need re-serialization).
+    pub body_modified: bool,
 }
 
-/// Analyze context size and decide what actions to take.
-pub fn analyze(body: &Value) -> ContextAction {
+/// Analyze context and prepare it for the target provider.
+/// Called BEFORE routing — may influence routing decision.
+pub fn prepare(body: &mut Value, target_provider: &str) -> ContextAction {
     let estimated = tokens::estimate_tokens(body);
 
-    // Tier 1: < 40K — no action needed
-    if estimated < 40_000 {
+    // Under 55K — both providers handle this fine
+    if estimated < 55_000 {
+        return ContextAction { force_provider: None, action: "none", body_modified: false };
+    }
+
+    // 55K-64K — DeepSeek's edge. Compress aggressively to try to fit.
+    if estimated < 64_000 && target_provider == "deepseek" {
+        info!(tokens = estimated, "Compressing to fit DeepSeek window");
+        let trimmed = truncate_old_tool_results(body, 4_000);
         return ContextAction {
             force_provider: None,
-            action: "none",
-            truncation_limit: 12_000,
+            action: "compress-for-deepseek",
+            body_modified: trimmed,
         };
     }
 
-    // Tier 2: 40K-60K — aggressive compression (shorter truncation)
-    if estimated < 60_000 {
-        info!(tokens = estimated, "Context tier 2: aggressive compression");
-        return ContextAction {
-            force_provider: None,
-            action: "aggressive-compress",
-            truncation_limit: 6_000,
-        };
-    }
-
-    // Tier 3: 60K-120K — force Claude (DeepSeek can't handle this well)
+    // 64K-120K — too big for DeepSeek, prefer Claude but don't force it
     if estimated < 120_000 {
-        info!(tokens = estimated, "Context tier 3: forcing Claude route");
+        info!(tokens = estimated, "Context large, preferring Claude");
+        let trimmed = truncate_old_tool_results(body, 6_000);
         return ContextAction {
             force_provider: Some("claude"),
-            action: "force-claude",
-            truncation_limit: 4_000,
+            action: "prefer-claude",
+            body_modified: trimmed,
         };
     }
 
-    // Tier 4: > 120K — force Claude + trim oldest messages
-    warn!(tokens = estimated, "Context tier 4: trimming old messages");
+    // 120K-180K — trim old messages to bring it down
+    if estimated < 180_000 {
+        warn!(tokens = estimated, "Trimming old messages");
+        truncate_old_tool_results(body, 3_000);
+        trim_old_messages(body, 100_000);
+        return ContextAction {
+            force_provider: Some("claude"),
+            action: "trim-old-messages",
+            body_modified: true,
+        };
+    }
+
+    // 180K+ — aggressive trim
+    warn!(tokens = estimated, "Emergency context trim");
+    truncate_old_tool_results(body, 2_000);
+    trim_old_messages(body, 80_000);
     ContextAction {
         force_provider: Some("claude"),
-        action: "trim-and-claude",
-        truncation_limit: 3_000,
+        action: "emergency-trim",
+        body_modified: true,
     }
 }
 
-/// Trim oldest messages to fit within budget. Preserves:
-/// - System prompt
-/// - First user message
-/// - Last N message pairs
-pub fn trim_messages(body: &mut Value, target_tokens: usize) {
-    let current_tokens = tokens::estimate_tokens(body);
-    if current_tokens <= target_tokens {
+/// After routing, if the chosen provider can't handle the context,
+/// this function tries to make it work or suggests a fallback.
+pub fn ensure_fits(body: &mut Value, provider: &str) -> bool {
+    let estimated = tokens::estimate_tokens(body);
+    let limit = if provider == "deepseek" { 60_000 } else { 190_000 };
+
+    if estimated <= limit {
+        return false; // Fits fine, no changes
+    }
+
+    // Doesn't fit — trim until it does
+    let target = limit - 5_000; // Leave headroom
+    truncate_old_tool_results(body, 2_000);
+    trim_old_messages(body, target);
+
+    let after = tokens::estimate_tokens(body);
+    info!(before = estimated, after = after, provider, "Trimmed to fit provider window");
+    true
+}
+
+/// Truncate tool_result content blocks in older messages.
+/// Keeps recent ones (last 4 messages) at full size.
+fn truncate_old_tool_results(body: &mut Value, max_chars: usize) -> bool {
+    let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+        return false;
+    };
+
+    let msg_count = messages.len();
+    if msg_count <= 6 {
+        return false; // Too few messages, don't touch
+    }
+
+    let mut modified = false;
+    // Only truncate messages that aren't the last 4
+    let cutoff = msg_count.saturating_sub(4);
+
+    for msg in messages[..cutoff].iter_mut() {
+        if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) else {
+            continue;
+        };
+
+        for block in content.iter_mut() {
+            if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+                continue;
+            }
+
+            if let Some(text) = block.get("content").and_then(|c| c.as_str()).map(|s| s.to_string()) {
+                if text.len() > max_chars {
+                    let cut = text[..max_chars].rfind('\n').unwrap_or(max_chars);
+                    block["content"] = Value::String(format!(
+                        "{}\n[...{} chars truncated for context management]",
+                        &text[..cut],
+                        text.len() - cut
+                    ));
+                    modified = true;
+                }
+            }
+        }
+    }
+
+    if modified {
+        debug!(max_chars, "Truncated old tool results");
+    }
+    modified
+}
+
+/// Drop oldest messages to bring total under target token count.
+/// Always preserves: system, first 2 messages, last 6 messages.
+fn trim_old_messages(body: &mut Value, target_tokens: usize) {
+    let current = tokens::estimate_tokens(body);
+    if current <= target_tokens {
         return;
     }
-    let tokens_to_shed = current_tokens - target_tokens;
 
     let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) else {
         return;
     };
 
-    if messages.len() <= 8 {
-        return;
-    }
-    let mut shed = 0usize;
-
-    // Find messages to remove: skip first 2 (system context) and last 8 (recent context)
-    let removable_end = messages.len().saturating_sub(8);
-    let removable_start = 2.min(removable_end);
-
-    if removable_start >= removable_end {
-        return;
+    if messages.len() <= 10 {
+        return; // Not enough to trim
     }
 
-    // Build summary of what we're removing
-    let mut summary_parts: Vec<String> = Vec::new();
-    let mut indices_to_remove: Vec<usize> = Vec::new();
+    let keep_start = 2; // First 2 messages (user's initial request + first response)
+    let keep_end = 6;   // Last 6 messages (recent context)
+    let removable_end = messages.len().saturating_sub(keep_end);
 
-    for i in removable_start..removable_end {
-        if shed >= tokens_to_shed {
+    if keep_start >= removable_end {
+        return;
+    }
+
+    // Remove messages from the middle until we're under budget
+    let mut to_remove = Vec::new();
+    let mut removed_tokens = 0usize;
+    let tokens_to_shed = current - target_tokens;
+
+    for i in keep_start..removable_end {
+        if removed_tokens >= tokens_to_shed {
             break;
         }
-
-        let msg_tokens = message_token_estimate(&messages[i]);
-        shed += msg_tokens;
-        indices_to_remove.push(i);
-
-        // Extract key info for summary
-        if let Some(role) = messages[i]["role"].as_str() {
-            if role == "assistant" {
-                if let Some(text) = extract_first_text(&messages[i]) {
-                    let preview = if text.len() > 100 { &text[..100] } else { &text };
-                    summary_parts.push(format!("- {}", preview.replace('\n', " ")));
-                }
-            }
-        }
+        let msg_size = serde_json::to_string(&messages[i]).map(|s| s.len() / 4).unwrap_or(0);
+        removed_tokens += msg_size;
+        to_remove.push(i);
     }
 
-    if indices_to_remove.is_empty() {
+    if to_remove.is_empty() {
         return;
     }
 
-    let removed_count = indices_to_remove.len();
+    let count = to_remove.len();
 
-    // Remove in reverse order to preserve indices
-    for &i in indices_to_remove.iter().rev() {
+    // Remove in reverse order
+    for &i in to_remove.iter().rev() {
         messages.remove(i);
     }
 
-    // Insert a summary message where the removed messages were
-    let summary = format!(
-        "[Context compressed: {} messages removed to fit context window.\nKey points from removed messages:\n{}]",
-        removed_count,
-        if summary_parts.is_empty() { "- (routine tool operations)".to_string() } else { summary_parts.join("\n") }
-    );
-
-    messages.insert(removable_start, serde_json::json!({
+    // Insert summary where removed messages were
+    messages.insert(keep_start, serde_json::json!({
         "role": "user",
-        "content": summary
+        "content": format!("[Context management: {} earlier messages condensed to save {} tokens]", count, removed_tokens)
     }));
 
-    info!(removed = removed_count, shed_tokens = shed, "Trimmed old messages");
-}
-
-fn message_token_estimate(msg: &Value) -> usize {
-    serde_json::to_string(msg).map(|s| s.len() / 4).unwrap_or(0)
-}
-
-fn extract_first_text(msg: &Value) -> Option<String> {
-    if let Some(text) = msg["content"].as_str() {
-        return Some(text.to_string());
-    }
-    if let Some(arr) = msg["content"].as_array() {
-        for block in arr {
-            if block["type"].as_str() == Some("text") {
-                if let Some(t) = block["text"].as_str() {
-                    return Some(t.to_string());
-                }
-            }
-        }
-    }
-    None
+    info!(removed = count, tokens_freed = removed_tokens, "Trimmed old messages");
 }

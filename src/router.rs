@@ -54,10 +54,8 @@ pub fn decide(body: &Option<Value>, force_provider: &Option<String>) -> RouteDec
         })
     }).count();
 
-    // ── Context size check: if too large for DeepSeek, force Claude ────
-    if estimated_tokens > 50_000 {
-        return RouteDecision { provider: "claude", reason: "context-too-large", estimated_tokens };
-    }
+    // Note: context size routing is now handled by context.rs (prepare/ensure_fits)
+    // Don't force Claude here — let context.rs handle it with proper fallback
 
     // ── Fresh session (≤2 messages, no tools) → Claude ─────────────────
     if msgs.len() <= 2 && !has_tools {

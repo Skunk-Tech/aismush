@@ -286,20 +286,6 @@ async fn handle(
         st.compressed_final_bytes += comp_stats.compressed_bytes as u64;
     }
 
-    // ── Context window management ─────────────────────────────────────
-    let ctx_action = if let Some(ref body_val) = parsed {
-        context::analyze(body_val)
-    } else {
-        context::ContextAction { force_provider: None, action: "none", truncation_limit: 12_000 }
-    };
-
-    // Tier 4: trim if over 120K
-    if ctx_action.action == "trim-and-claude" {
-        if let Some(ref mut body_val) = parsed {
-            context::trim_messages(body_val, 150_000);
-        }
-    }
-
     // ── Memory injection ────────────────────────────────────────────────
     let project_path = parsed.as_ref().map(|b| memory::detect_project(b)).unwrap_or_else(|| "default".to_string());
     if let (Some(ref db), Some(ref mut body_val)) = (&state.db, &mut parsed) {
@@ -307,18 +293,27 @@ async fn handle(
     }
 
     // ── Route decision ──────────────────────────────────────────────────
-    // Context action can override the provider
-    let route = if let Some(forced_by_context) = ctx_action.force_provider {
-        router::RouteDecision {
-            provider: forced_by_context,
-            reason: ctx_action.action,
-            estimated_tokens: parsed.as_ref().map(|b| tokens::estimate_tokens(b)).unwrap_or(0),
-        }
-    } else {
-        router::decide(&parsed, &state.config.force_provider)
-    };
+    let mut route = router::decide(&parsed, &state.config.force_provider);
 
-    // Use the actual model name for the chosen provider
+    // ── Context window management ─────────────────────────────────────
+    // Run AFTER routing so we know the target provider
+    let mut body_modified = comp_stats.tool_results_processed > 0;
+    if let Some(ref mut body_val) = parsed {
+        let ctx = context::prepare(body_val, route.provider);
+        if ctx.body_modified { body_modified = true; }
+        if let Some(forced) = ctx.force_provider {
+            route.provider = forced;
+            route.reason = ctx.action;
+        }
+
+        // Ensure it fits the chosen provider's window
+        if context::ensure_fits(body_val, route.provider) {
+            body_modified = true;
+        }
+
+        route.estimated_tokens = tokens::estimate_tokens(body_val);
+    }
+
     let display_model = if route.provider == "deepseek" { "deepseek-chat".to_string() } else { model.clone() };
 
     info!(
@@ -329,8 +324,8 @@ async fn handle(
         "Routing"
     );
 
-    // Re-serialize if compressed, otherwise use original bytes
-    let final_body = if comp_stats.tool_results_processed > 0 {
+    // Re-serialize if body was modified (compression or context trimming)
+    let final_body = if body_modified {
         Bytes::from(serde_json::to_vec(parsed.as_ref().unwrap()).unwrap_or_else(|_| body_bytes.to_vec()))
     } else {
         body_bytes.clone()
