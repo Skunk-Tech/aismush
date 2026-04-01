@@ -8,17 +8,36 @@ $PORT = if ($env:PROXY_PORT) { $env:PROXY_PORT } else { "1849" }
 
 New-Item -ItemType Directory -Force -Path $LOGDIR | Out-Null
 
-# Load config
-if (Test-Path "config.json") {
-    $config = Get-Content "config.json" | ConvertFrom-Json
-    if ($config.apiKey -and -not $env:DEEPSEEK_API_KEY) {
-        $env:DEEPSEEK_API_KEY = $config.apiKey
+# Load config from multiple locations
+$configPaths = @(".\config.json", ".\.deepseek-proxy.json", "$LOGDIR\config.json")
+foreach ($cfg in $configPaths) {
+    if ((Test-Path $cfg) -and -not $env:DEEPSEEK_API_KEY) {
+        try {
+            $config = Get-Content $cfg | ConvertFrom-Json
+            if ($config.apiKey) { $env:DEEPSEEK_API_KEY = $config.apiKey }
+        } catch {}
     }
 }
 
+# First-time setup: ask for key if missing
 if (-not $env:DEEPSEEK_API_KEY) {
-    Write-Host "  No DeepSeek API key. Set DEEPSEEK_API_KEY or create config.json" -ForegroundColor Red
-    exit 1
+    Write-Host ""
+    Write-Host "  AISmush - First Time Setup" -ForegroundColor Cyan
+    Write-Host "  ──────────────────────────"
+    Write-Host ""
+    Write-Host "  You need a DeepSeek API key (free tier available)."
+    Write-Host "  Get one at: https://platform.deepseek.com/api_keys"
+    Write-Host ""
+    $key = Read-Host "  Paste your DeepSeek API key"
+    if (-not $key) {
+        Write-Host "  No key provided. Exiting." -ForegroundColor Red
+        exit 1
+    }
+    $env:DEEPSEEK_API_KEY = $key
+    # Save so they never have to do this again
+    @{apiKey = $key} | ConvertTo-Json | Set-Content "$LOGDIR\config.json"
+    Write-Host "  Key saved. You won't be asked again." -ForegroundColor Green
+    Write-Host ""
 }
 
 # Kill stale proxy

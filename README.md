@@ -98,12 +98,13 @@ That's it. Two commands total: install, then run.
 
 ### Windows
 
-Download from the [Releases page](https://github.com/Skunk-Tech/aismush/releases), then:
+Download from the [Releases page](https://github.com/Skunk-Tech/aismush/releases), extract, and run:
 
 ```powershell
-$env:DEEPSEEK_API_KEY = "sk-your-key"
 .\start.ps1
 ```
+
+First run prompts for your DeepSeek API key and saves it automatically, same as Linux/macOS.
 
 ### Manual Download
 
