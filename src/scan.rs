@@ -211,7 +211,7 @@ pub async fn call_ai(prompt: &str, proxy_port: u16, api_key: &str) -> Result<Str
     let output = tokio::process::Command::new("curl")
         .args([
             "-sS",          // silent but show errors
-            "--max-time", "60",
+            "--max-time", "180",
             "-X", "POST",
             &url,
             "-H", "Content-Type: application/json",
@@ -389,25 +389,85 @@ pub async fn run_pipeline(
         }
     }
 
-    // Step 6: Synthesis
+    // Step 6: Synthesis (truncate each agent to keep prompt manageable)
     eprintln!("  [5/6] Synthesizing...");
-    let all_outputs = agent_outputs.join("\n\n---\n\n");
+    let truncated_outputs: Vec<String> = agent_outputs.iter()
+        .map(|o| if o.len() > 2000 { format!("{}...[truncated]", &o[..2000]) } else { o.clone() })
+        .collect();
+    let all_outputs = truncated_outputs.join("\n\n---\n\n");
     let skills_json = plan.get("skills").map(|s| s.to_string()).unwrap_or("[]".to_string());
     let combined = format!("Agent Outputs:\n{}\n\nPlanned Skills:\n{}", all_outputs, skills_json);
 
     let synthesis_prompt = prompts::synthesis_prompt(&combined, &analysis.to_string());
-    let synthesis_response = call_ai(&synthesis_prompt, proxy_port, api_key).await?;
-    let synthesis = extract_json(&synthesis_response)?;
-
-    let total_agents = synthesis["agents"].as_array().map(|a| a.len()).unwrap_or(0);
-    let total_skills = synthesis["skills"].as_array().map(|a| a.len()).unwrap_or(0);
-    eprintln!("        Merged → {} agents, {} skills", total_agents, total_skills);
+    let synthesis = match call_ai(&synthesis_prompt, proxy_port, api_key).await {
+        Ok(resp) => match extract_json(&resp) {
+            Ok(s) => {
+                let total_agents = s["agents"].as_array().map(|a| a.len()).unwrap_or(0);
+                let total_skills = s["skills"].as_array().map(|a| a.len()).unwrap_or(0);
+                eprintln!("        Merged → {} agents, {} skills", total_agents, total_skills);
+                s
+            }
+            Err(e) => {
+                eprintln!("        Synthesis JSON parse failed: {}", e);
+                eprintln!("        Writing raw agent outputs instead...");
+                build_fallback_synthesis(&agent_outputs, &plan)
+            }
+        }
+        Err(e) => {
+            eprintln!("        Synthesis call failed: {}", e);
+            eprintln!("        Writing raw agent outputs instead...");
+            build_fallback_synthesis(&agent_outputs, &plan)
+        }
+    };
 
     Ok(ScanResult {
         analysis,
         plan,
         synthesis,
         existing_skipped: existing.agents.clone(),
+    })
+}
+
+/// Build a fallback synthesis from raw agent outputs when the synthesis AI call fails.
+fn build_fallback_synthesis(agent_outputs: &[String], plan: &serde_json::Value) -> serde_json::Value {
+    let mut agents = Vec::new();
+
+    for output in agent_outputs {
+        // Parse "AGENT:name\n<content>" format
+        if let Some(rest) = output.strip_prefix("AGENT:") {
+            let mut parts = rest.splitn(2, '\n');
+            let name = parts.next().unwrap_or("unknown").trim();
+            let content = parts.next().unwrap_or("").trim();
+            if !content.is_empty() {
+                agents.push(serde_json::json!({
+                    "name": name,
+                    "content": content,
+                }));
+            }
+        }
+    }
+
+    // Convert planned skills to skill entries
+    let skills = plan.get("skills")
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            arr.iter().map(|s| {
+                let name = s["name"].as_str().unwrap_or("skill");
+                let desc = s["description"].as_str().unwrap_or("");
+                let cmds = s["commands"].as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("\n- "))
+                    .unwrap_or_default();
+                serde_json::json!({
+                    "name": name,
+                    "content": format!("---\nname: {}\ndescription: {}\n---\n\n## Commands\n- {}", name, desc, cmds),
+                })
+            }).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    serde_json::json!({
+        "agents": agents,
+        "skills": skills,
     })
 }
 
