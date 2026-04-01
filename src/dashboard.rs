@@ -68,9 +68,9 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
 <p class="sub">Smart routing · Context compression · Persistent memory · Cost tracking</p>
 
 <div class="tabs">
-  <div class="tab active" onclick="showPage('overview')">Overview</div>
-  <div class="tab" onclick="showPage('history')">History</div>
-  <div class="tab" onclick="showPage('memories')">Memories</div>
+  <div class="tab active" onclick="showPage('overview',this)">Overview</div>
+  <div class="tab" onclick="showPage('history',this)">History</div>
+  <div class="tab" onclick="showPage('memories',this)">Memories</div>
 </div>
 
 <!-- Overview Page -->
@@ -129,11 +129,11 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
 const PORT = {port};
 let currentPage = 'overview';
 
-function showPage(page) {{
-  document.querySelectorAll('[id^=page-]').forEach(el => el.style.display = 'none');
-  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+function showPage(page, el) {{
+  document.querySelectorAll('[id^=page-]').forEach(e => e.style.display = 'none');
+  document.querySelectorAll('.tab').forEach(e => e.classList.remove('active'));
   document.getElementById('page-' + page).style.display = 'block';
-  event.target.classList.add('active');
+  if (el) el.classList.add('active');
   currentPage = page;
   if (page === 'history') loadHistory();
   if (page === 'memories') loadMemories();
@@ -189,6 +189,10 @@ async function loadHistory() {{
   try {{
     const r = await fetch('/history');
     const hist = await r.json();
+    if (hist.length === 0) {{
+      document.getElementById('history-table').innerHTML = '<tr><td colspan="8" style="color:var(--dim)">No requests recorded yet</td></tr>';
+      return;
+    }}
     document.getElementById('history-table').innerHTML = hist.map(r => `
       <tr>
         <td>${{fmtTime(r.timestamp)}}</td>
@@ -197,11 +201,11 @@ async function loadHistory() {{
         <td>${{r.reason}}</td>
         <td>${{fmtK(r.input_tokens)}}/${{fmtK(r.output_tokens)}}</td>
         <td>${{fmt(r.actual_cost)}}</td>
-        <td>${{fmt(r.equiv_cost - r.actual_cost)}}</td>
+        <td>${{fmt((r.equiv_cost||0) - (r.actual_cost||0))}}</td>
         <td>${{r.latency_ms}}ms</td>
       </tr>
     `).join('');
-  }} catch(e) {{}}
+  }} catch(e) {{ console.error('History load failed:', e); }}
 }}
 
 async function loadMemories() {{
@@ -209,7 +213,7 @@ async function loadMemories() {{
     const r = await fetch('/memories');
     const mems = await r.json();
     const list = document.getElementById('memories-list');
-    if (mems.length === 0) {{
+    if (!mems || mems.length === 0) {{
       list.innerHTML = '<p style="color:var(--dim);font-size:12px">No memories yet. Memories are extracted from AI responses during coding sessions.</p>';
       return;
     }}
@@ -217,10 +221,10 @@ async function loadMemories() {{
       <div class="mem-item">
         <span class="mem-cat">${{m.category}}</span>
         <span class="mem-text">${{m.content}}</span>
-        <span style="color:var(--dim);font-size:10px">${{m.accesses}} hits · score ${{m.relevance.toFixed(2)}}</span>
+        <span style="color:var(--dim);font-size:10px">${{m.accesses||0}} hits · score ${{(m.relevance||0).toFixed(2)}}</span>
       </div>
     `).join('');
-  }} catch(e) {{}}
+  }} catch(e) {{ console.error('Memories load failed:', e); }}
 }}
 
 async function clearMemories() {{
