@@ -58,33 +58,55 @@ pub async fn claude(
         }
     };
 
-    // Try request with retry on connection errors
+    // Try Claude — if connection fails, fall back to DeepSeek (not a retry loop)
     let resp = match state.client.request(req).await {
         Ok(r) => r,
         Err(e) => {
-            // Retry once — connection pool may have a stale entry
-            warn!(error = %e, "Claude connection failed, retrying...");
-            let mut retry_builder = Request::builder()
-                .method(parts.method.clone())
-                .uri(format!("https://api.anthropic.com{}", path));
-            for (k, v) in &parts.headers {
-                if k == "host" || k == "connection" { continue; }
-                retry_builder = retry_builder.header(k, v);
-            }
-            retry_builder = retry_builder.header("host", "api.anthropic.com");
-            match retry_builder.body(full(body.clone())) {
-                Ok(retry_req) => match state.client.request(retry_req).await {
-                    Ok(r) => r,
-                    Err(e2) => {
-                        error!(error = %e2, "Claude retry also failed");
-                        return Ok(json_resp(StatusCode::BAD_GATEWAY,
-                            r#"{"error":"Could not connect to Claude API. Check your network or try again."}"#));
-                    }
-                },
-                Err(e2) => {
-                    error!(error = %e2, "Failed to build retry request");
-                    return Ok(json_resp(StatusCode::BAD_GATEWAY, &format!(r#"{{"error":"{}"}}"#, e)));
+            warn!(error = %e, "Claude connection failed");
+
+            // Don't retry Claude — fall back to DeepSeek with trimmed context
+            if !state.config.api_key.is_empty() {
+                warn!("Falling back to DeepSeek (trimming context to fit)");
+
+                // Build DeepSeek request from original body
+                let mut ds_body: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+                ds_body["model"] = serde_json::Value::String("deepseek-chat".into());
+                ds_body["temperature"] = serde_json::json!(0);
+                if let serde_json::Value::Object(ref mut m) = ds_body {
+                    m.remove("thinking");
+                    m.remove("budget_tokens");
                 }
+                // Aggressively trim to fit DeepSeek window
+                crate::context::ensure_fits(&mut ds_body, "deepseek");
+
+                let ds_path = path.replace("/v1/", "/").replace("/v1", "/");
+                let ds_bytes = serde_json::to_vec(&ds_body).unwrap_or_default();
+
+                let ds_req = Request::builder()
+                    .method(hyper::Method::POST)
+                    .uri(format!("https://api.deepseek.com/anthropic{}", ds_path))
+                    .header("host", "api.deepseek.com")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", &state.config.api_key)
+                    .header("authorization", format!("Bearer {}", &state.config.api_key))
+                    .body(full(Bytes::from(ds_bytes)))
+                    .unwrap();
+
+                match state.client.request(ds_req).await {
+                    Ok(r) => {
+                        warn!("DeepSeek fallback succeeded");
+                        r
+                    }
+                    Err(e2) => {
+                        error!(error = %e2, "Both Claude and DeepSeek failed");
+                        return Ok(json_resp(StatusCode::BAD_GATEWAY,
+                            r#"{"error":"Both Claude and DeepSeek connections failed. Check your network."}"#));
+                    }
+                }
+            } else {
+                error!("Claude failed and no DeepSeek key configured");
+                return Ok(json_resp(StatusCode::BAD_GATEWAY,
+                    r#"{"error":"Claude connection failed. Configure a DeepSeek key for automatic fallback."}"#));
             }
         }
     };
