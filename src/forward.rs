@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, error, info};
+use tracing::{debug, error, warn};
 
 use crate::cost;
 use crate::db;
@@ -58,8 +58,38 @@ pub async fn claude(
         }
     };
 
-    match state.client.request(req).await {
-        Ok(resp) => {
+    // Try request with retry on connection errors
+    let resp = match state.client.request(req).await {
+        Ok(r) => r,
+        Err(e) => {
+            // Retry once — connection pool may have a stale entry
+            warn!(error = %e, "Claude connection failed, retrying...");
+            let mut retry_builder = Request::builder()
+                .method(parts.method.clone())
+                .uri(format!("https://api.anthropic.com{}", path));
+            for (k, v) in &parts.headers {
+                if k == "host" || k == "connection" { continue; }
+                retry_builder = retry_builder.header(k, v);
+            }
+            retry_builder = retry_builder.header("host", "api.anthropic.com");
+            match retry_builder.body(full(body.clone())) {
+                Ok(retry_req) => match state.client.request(retry_req).await {
+                    Ok(r) => r,
+                    Err(e2) => {
+                        error!(error = %e2, "Claude retry also failed");
+                        return Ok(json_resp(StatusCode::BAD_GATEWAY,
+                            r#"{"error":"Could not connect to Claude API. Check your network or try again."}"#));
+                    }
+                },
+                Err(e2) => {
+                    error!(error = %e2, "Failed to build retry request");
+                    return Ok(json_resp(StatusCode::BAD_GATEWAY, &format!(r#"{{"error":"{}"}}"#, e)));
+                }
+            }
+        }
+    };
+
+    {
             let status = resp.status();
             let mut rb = Response::builder().status(status);
             for (k, v) in resp.headers() { rb = rb.header(k, v); }
@@ -132,11 +162,6 @@ pub async fn claude(
             });
 
             Ok(rb.body(StreamBody::new(tokio_stream::wrappers::ReceiverStream::new(rx)).boxed()).unwrap())
-        }
-        Err(e) => {
-            error!(error = %e, "Claude upstream error");
-            Ok(json_resp(StatusCode::BAD_GATEWAY, &format!(r#"{{"error":"{}"}}"#, e)))
-        }
     }
 }
 
