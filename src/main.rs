@@ -576,7 +576,7 @@ async fn run_scan(args: &[String]) {
     // Detect existing artifacts
     let existing = scan::detect_existing(&project_path);
     if !existing.agents.is_empty() {
-        eprintln!("        Existing agents: {}", existing.agents.join(", "));
+        eprintln!("        Existing agents: {} (will skip, use --force to overwrite)", existing.agents.len());
     }
 
     // Steps 2-6: AI pipeline

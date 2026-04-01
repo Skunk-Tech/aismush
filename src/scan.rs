@@ -358,11 +358,20 @@ pub async fn run_pipeline(
     eprintln!("  [4/6] Generating domain-specific content...");
     let mut agent_outputs: Vec<String> = Vec::new();
 
+    // Load existing agents so synthesis has the full picture
+    let agents_dir = profile.root.join(".claude").join("agents");
+    for existing_name in &existing.agents {
+        let path = agents_dir.join(format!("{}.md", existing_name));
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            agent_outputs.push(format!("AGENT:{}\n{}", existing_name, content));
+        }
+    }
+
     if let Some(agents) = plan["agents"].as_array() {
         for agent in agents {
             let name = agent["name"].as_str().unwrap_or("unknown");
 
-            // Skip if already exists
+            // Skip AI call if agent already exists on disk
             if existing.agents.iter().any(|a| a == name) {
                 eprintln!("        Skipping {} (already exists)", name);
                 continue;
