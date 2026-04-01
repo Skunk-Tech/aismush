@@ -50,7 +50,8 @@ trap "rm -rf $TMPDIR" EXIT
 curl -fsSL "$DOWNLOAD_URL" -o "$TMPDIR/aismush.tar.gz"
 tar xzf "$TMPDIR/aismush.tar.gz" -C "$TMPDIR"
 
-# Install binary
+# Install binary (remove first to handle "Text file busy" when upgrading)
+rm -f "$INSTALL_DIR/aismush" 2>/dev/null
 cp "$TMPDIR/aismush" "$INSTALL_DIR/aismush"
 chmod +x "$INSTALL_DIR/aismush"
 
