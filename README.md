@@ -86,18 +86,15 @@ curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh 
 
 This downloads the right binary for your platform and installs it to `~/.local/bin/`.
 
-### Setup
+### Run
 
 ```bash
-# Save your DeepSeek API key (one time)
-mkdir -p ~/.hybrid-proxy
-echo '{"apiKey":"sk-your-deepseek-key"}' > ~/.hybrid-proxy/config.json
-
-# Run from any project directory
 aismush-start
 ```
 
-That's it. Type `aismush-start` from any project directory and you're coding at 90% lower cost.
+First run asks for your DeepSeek API key (free at [platform.deepseek.com](https://platform.deepseek.com/api_keys)). It saves the key automatically — you'll never be asked again.
+
+That's it. Two commands total: install, then run.
 
 ### Windows
 

@@ -71,15 +71,40 @@ set -e
 
 LOGDIR="$HOME/.hybrid-proxy"
 LOGFILE="$LOGDIR/proxy.log"
+CONFIG="$LOGDIR/config.json"
 PORT="${PROXY_PORT:-1849}"
 mkdir -p "$LOGDIR"
 
 # Load config from multiple locations
-for cfg in "$PWD/config.json" "$PWD/.deepseek-proxy.json" "$HOME/.hybrid-proxy/config.json"; do
+for cfg in "$PWD/config.json" "$PWD/.deepseek-proxy.json" "$CONFIG"; do
     if [ -f "$cfg" ] && [ -z "$DEEPSEEK_API_KEY" ]; then
         export DEEPSEEK_API_KEY=$(python3 -c "import json;print(json.load(open('$cfg')).get('apiKey',''),end='')" 2>/dev/null || true)
     fi
 done
+
+# If no key found anywhere, ask the user
+if [ -z "$DEEPSEEK_API_KEY" ]; then
+    echo ""
+    echo "  AISmush - First Time Setup"
+    echo "  ──────────────────────────"
+    echo ""
+    echo "  You need a DeepSeek API key (free tier available)."
+    echo "  Get one at: https://platform.deepseek.com/api_keys"
+    echo ""
+    read -p "  Paste your DeepSeek API key: " DEEPSEEK_API_KEY
+    echo ""
+
+    if [ -z "$DEEPSEEK_API_KEY" ]; then
+        echo "  No key provided. Exiting."
+        exit 1
+    fi
+
+    # Save it so they never have to do this again
+    echo "{\"apiKey\":\"$DEEPSEEK_API_KEY\"}" > "$CONFIG"
+    export DEEPSEEK_API_KEY
+    echo "  Key saved to $CONFIG"
+    echo ""
+fi
 
 # Kill stale proxy
 lsof -ti:$PORT 2>/dev/null | xargs kill -9 2>/dev/null || true
@@ -90,7 +115,8 @@ PROXY_PID=$!
 sleep 0.3
 
 if ! kill -0 $PROXY_PID 2>/dev/null; then
-    echo "AISmush failed to start. Check $LOGFILE"
+    echo "  AISmush failed to start. Check $LOGFILE"
+    tail -3 "$LOGFILE" 2>/dev/null
     exit 1
 fi
 
@@ -115,17 +141,9 @@ WRAPPER
 chmod +x "$INSTALL_DIR/aismush-start"
 
 echo ""
-echo "  Done! Two commands installed:"
+echo "  Done! Run from any directory:"
 echo ""
-echo "    aismush          Run the proxy server directly"
-echo "    aismush-start    Start proxy + launch Claude Code (recommended)"
-echo ""
-echo "  Quick start:"
-echo "    export DEEPSEEK_API_KEY=sk-your-key"
 echo "    aismush-start"
 echo ""
-echo "  Or save your key permanently:"
-echo "    mkdir -p ~/.hybrid-proxy"
-echo "    echo '{\"apiKey\":\"sk-your-key\"}' > ~/.hybrid-proxy/config.json"
-echo "    aismush-start"
+echo "  First run will ask for your DeepSeek API key (one time only)."
 echo ""
