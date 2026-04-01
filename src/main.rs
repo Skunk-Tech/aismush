@@ -102,10 +102,8 @@ async fn main() {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    // Check for updates on startup (visible to user before log redirect)
-    tokio::spawn(async {
-        check_for_updates().await;
-    });
+    // Check for updates BEFORE server starts (prints to stderr before log redirect)
+    check_for_updates().await;
 
     let cfg = config::ProxyConfig::load();
 
@@ -425,14 +423,11 @@ async fn reqwest_lite(url: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&body.to_bytes()).to_string())
 }
 
-/// Check GitHub for newer version on startup.
+/// Check GitHub for newer version on startup (3 second timeout).
 async fn check_for_updates() {
-    // Small delay so it doesn't slow startup
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
     let url = "https://api.github.com/repos/Skunk-Tech/aismush/releases/latest";
     let output = tokio::process::Command::new("curl")
-        .args(["-sfL", "-H", "Accept: application/vnd.github.v3+json", url])
+        .args(["-sfL", "--max-time", "3", "-H", "Accept: application/vnd.github.v3+json", url])
         .output()
         .await;
 

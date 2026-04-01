@@ -48,7 +48,8 @@ if [ -f "$UPDATE_FILE" ]; then
     echo ""
 fi
 
-"$BINARY" > "$LOGFILE" 2>&1 &
+# stdout → log, stderr passes through to terminal (for update notifications)
+"$BINARY" > "$LOGFILE" &
 PROXY_PID=$!
 sleep 0.5
 
