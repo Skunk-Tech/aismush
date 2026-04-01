@@ -306,7 +306,7 @@ async fn handle(
     // ── Context window management ─────────────────────────────────────
     // ONLY for DeepSeek turns. Claude has 200K window and doesn't need trimming.
     // Trimming messages breaks tool_use/tool_result pairs → causes 400 errors on Claude.
-    let mut body_modified = comp_stats.tool_results_processed > 0;
+    let mut body_modified = comp_stats.original_bytes != comp_stats.compressed_bytes; // Only true if content actually changed
     if route.provider == "deepseek" {
         if let Some(ref mut body_val) = parsed {
             let ctx = context::prepare(body_val, "deepseek");
