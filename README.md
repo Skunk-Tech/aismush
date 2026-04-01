@@ -282,6 +282,12 @@ aismush --help       # Show help
 aismush-start        # Start proxy + launch Claude Code (recommended)
 ```
 
+## Global Savings Dashboard
+
+See how much the AISmush community is saving worldwide: **[aismush.us.com](https://aismush.us.com/)**
+
+Anonymous usage stats (request counts and savings only — no personal data, no code, no API keys) are reported when a session ends. This powers the live global counter on the dashboard.
+
 ## Requirements
 
 - [Claude Code](https://claude.ai/code) CLI installed (or any Anthropic API client)
