@@ -20,7 +20,7 @@ AISmush automatically detects what kind of work each turn requires:
 | Error recovery, debugging loops | **Claude** | Needs deep analysis to break out |
 | Tool result processing | **DeepSeek** | Mechanical — read result, decide next action |
 | Mid-session coding | **DeepSeek** | Following an established plan |
-| Large context (>50K tokens) | **Claude** | DeepSeek's window can't handle it |
+| Large context (>64K tokens) | **Claude** | Beyond DeepSeek's effective window |
 
 **Real-world result: 90%+ cost savings** on a large multi-language codebase (2000+ files across Rust, React, and Node.js).
 
@@ -44,10 +44,11 @@ Prevents DeepSeek from choking on long conversations:
 
 | Context Size | Strategy |
 |---|---|
-| < 40K tokens | Pass through as-is |
-| 40K – 60K | Aggressive compression (tighter truncation) |
-| 60K – 120K | Force route to Claude + compress |
-| > 120K | Trim oldest messages, preserving recent context |
+| < 55K tokens | No intervention — both providers handle this fine |
+| 55K – 64K | Truncate old tool results, try DeepSeek |
+| 64K – 120K | Prefer Claude, truncate old tool results |
+| 120K – 180K | Claude + trim old messages from conversation middle |
+| > 180K | Emergency trim — aggressive message removal, keep first 2 + last 6 |
 
 ### Persistent Memory
 - Extracts key facts from AI responses (architecture decisions, bug fixes, project changes)
