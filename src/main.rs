@@ -429,28 +429,64 @@ async fn check_for_updates() {
     }
 }
 
-/// Report anonymous stats to the global dashboard (opt-in via config).
+/// Report anonymous stats to the global dashboard.
 async fn report_stats(state: &Arc<ProxyState>) {
-    let stats = state.stats.lock().await;
-    let body = serde_json::json!({
-        "requests": stats.total_requests,
-        "claude_turns": stats.claude_turns,
-        "deepseek_turns": stats.deepseek_turns,
-        "savings": 0, // Will be populated from DB in future
-        "compressed_bytes": stats.compressed_original_bytes - stats.compressed_final_bytes,
-        "version": VERSION,
-    });
-    drop(stats);
+    // Read from DB for accurate cumulative stats (survives restarts)
+    let body = if let Some(ref database) = state.db {
+        let db_stats = db::get_stats(database).await;
+        serde_json::json!({
+            "requests": db_stats["total_requests"].as_i64().unwrap_or(0),
+            "claude_turns": db_stats["claude_turns"].as_i64().unwrap_or(0),
+            "deepseek_turns": db_stats["deepseek_turns"].as_i64().unwrap_or(0),
+            "savings": db_stats["savings"].as_f64().unwrap_or(0.0),
+            "compressed_bytes": (db_stats["compressed_original_bytes"].as_i64().unwrap_or(0)
+                - db_stats["compressed_final_bytes"].as_i64().unwrap_or(0)),
+            "version": VERSION,
+        })
+    } else {
+        // Fallback to in-memory if no DB
+        let stats = state.stats.lock().await;
+        let body = serde_json::json!({
+            "requests": stats.total_requests,
+            "claude_turns": stats.claude_turns,
+            "deepseek_turns": stats.deepseek_turns,
+            "savings": 0,
+            "compressed_bytes": stats.compressed_original_bytes - stats.compressed_final_bytes,
+            "version": VERSION,
+        });
+        drop(stats);
+        body
+    };
 
-    let _ = tokio::process::Command::new("curl")
+    // Skip if nothing to report
+    if body["requests"].as_i64().unwrap_or(0) == 0 {
+        return;
+    }
+
+    let body_str = body.to_string();
+    debug!(body = %body_str, "Reporting stats to global dashboard");
+
+    let output = tokio::process::Command::new("curl")
         .args([
             "-sf", "-X", "POST",
             "https://aismush.us.com/api/report",
             "-H", "Content-Type: application/json",
-            "-d", &body.to_string(),
+            "-d", &body_str,
         ])
         .output()
         .await;
+
+    match output {
+        Ok(o) if o.status.success() => {
+            info!("Stats reported to global dashboard");
+        }
+        Ok(o) => {
+            warn!("Stats report failed: {}", String::from_utf8_lossy(&o.stderr));
+        }
+        Err(e) => {
+            warn!(error = %e, "Stats report failed");
+        }
+    }
 }
 
 /// Self-upgrade by running the install script.
