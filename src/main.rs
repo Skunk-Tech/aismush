@@ -55,6 +55,7 @@ async fn main() {
         println!("  aismush --version    Show version");
         println!("  aismush --status     Check if proxy is running");
         println!("  aismush --config     Show current configuration");
+        println!("  aismush --upgrade    Upgrade to latest version");
         println!();
         println!("The proxy reads config from:");
         println!("  1. Environment variables (DEEPSEEK_API_KEY, PROXY_PORT)");
@@ -90,6 +91,10 @@ async fn main() {
         println!("Verbose:      {}", cfg.verbose);
         println!("Data Dir:     {}", cfg.data_dir.display());
         println!("Database:     {}", cfg.db_path.display());
+        return;
+    }
+    if args.iter().any(|a| a == "--upgrade") {
+        upgrade().await;
         return;
     }
 
@@ -313,9 +318,12 @@ async fn handle(
         router::decide(&parsed, &state.config.force_provider)
     };
 
+    // Use the actual model name for the chosen provider
+    let display_model = if route.provider == "deepseek" { "deepseek-chat".to_string() } else { model.clone() };
+
     info!(
         provider = route.provider,
-        model = %model,
+        model = %display_model,
         reason = route.reason,
         est_tokens = route.estimated_tokens,
         "Routing"
@@ -335,7 +343,7 @@ async fn handle(
     if route.provider == "claude" {
         forward::claude(&parts, &final_body, &path, &model, route.reason, &project_path, comp_orig, comp_final, &state).await
     } else {
-        forward::deepseek(&final_body, &path, &parsed, &model, route.reason, &project_path, comp_orig, comp_final, &state).await
+        forward::deepseek(&final_body, &path, &parsed, "deepseek-chat", route.reason, &project_path, comp_orig, comp_final, &state).await
     }
 }
 
@@ -359,5 +367,33 @@ async fn reqwest_lite(url: &str) -> Option<String> {
     let resp = sender.send_request(req).await.ok()?;
     let body = resp.into_body().collect().await.ok()?;
     Some(String::from_utf8_lossy(&body.to_bytes()).to_string())
+}
+
+/// Self-upgrade by running the install script.
+async fn upgrade() {
+    println!("AISmush v{} — checking for updates...", VERSION);
+    println!();
+
+    // Use the install script which handles platform detection and download
+    let status = tokio::process::Command::new("bash")
+        .arg("-c")
+        .arg("curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh | bash")
+        .status()
+        .await;
+
+    match status {
+        Ok(s) if s.success() => {
+            println!();
+            println!("Upgrade complete. Run 'aismush --version' to verify.");
+        }
+        Ok(s) => {
+            eprintln!("Upgrade failed (exit code {:?})", s.code());
+            eprintln!("Try manually: curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh | bash");
+        }
+        Err(e) => {
+            eprintln!("Upgrade failed: {}", e);
+            eprintln!("Try manually: curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh | bash");
+        }
+    }
 }
 
