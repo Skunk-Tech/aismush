@@ -198,9 +198,16 @@ impl ProjectProfile {
 // ── AI pipeline ─────────────────────────────────────────────────────────────
 
 /// Send a prompt to the AI via the proxy and get a response.
-pub async fn call_ai(prompt: &str, proxy_port: u16, api_key: &str) -> Result<String, String> {
+pub async fn call_ai(prompt: &str, proxy_port: u16, api_key: &str, use_claude: bool) -> Result<String, String> {
+    let model = if use_claude { "claude-haiku-3-5-20241022" } else { "deepseek-chat" };
+    // For Claude, use ANTHROPIC_API_KEY if available, otherwise the passed key
+    let effective_key = if use_claude {
+        std::env::var("ANTHROPIC_API_KEY").unwrap_or_else(|_| api_key.to_string())
+    } else {
+        api_key.to_string()
+    };
     let body = serde_json::json!({
-        "model": "deepseek-chat",
+        "model": model,
         "max_tokens": 8192,
         "messages": [{"role": "user", "content": prompt}]
     });
@@ -216,7 +223,7 @@ pub async fn call_ai(prompt: &str, proxy_port: u16, api_key: &str) -> Result<Str
             &url,
             "-H", "Content-Type: application/json",
             "-H", "anthropic-version: 2023-06-01",
-            "-H", &format!("x-api-key: {}", api_key),
+            "-H", &format!("x-api-key: {}", effective_key),
             "-d", &body_str,
         ])
         .output()
@@ -319,16 +326,18 @@ pub async fn run_pipeline(
     existing: &ExistingArtifacts,
     proxy_port: u16,
     api_key: &str,
+    use_claude: bool,
 ) -> Result<ScanResult, String> {
     // Step 1: Analysis
-    eprintln!("  [2/6] Analyzing project (via DeepSeek)...");
+    let provider_name = if use_claude { "Claude" } else { "DeepSeek" };
+    eprintln!("  [2/6] Analyzing project (via {})...", provider_name);
     let analysis_prompt = prompts::analysis_prompt(
         profile.total_files,
         &profile.ext_summary(),
         &profile.config_summary(),
         &profile.code_summary(),
     );
-    let analysis_response = call_ai(&analysis_prompt, proxy_port, api_key).await?;
+    let analysis_response = call_ai(&analysis_prompt, proxy_port, api_key, use_claude).await?;
     let analysis = extract_json(&analysis_response)?;
 
     let langs = analysis["languages"].as_array()
@@ -347,7 +356,7 @@ pub async fn run_pipeline(
         existing.agents.join(", ")
     };
     let planning_prompt = prompts::planning_prompt(&analysis.to_string(), &existing_list);
-    let planning_response = call_ai(&planning_prompt, proxy_port, api_key).await?;
+    let planning_response = call_ai(&planning_prompt, proxy_port, api_key, use_claude).await?;
     let plan = extract_json(&planning_response)?;
 
     let planned_agents = plan["agents"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -386,7 +395,7 @@ pub async fn run_pipeline(
                 &profile.code_summary(),
             );
 
-            match call_ai(&gen_prompt, proxy_port, api_key).await {
+            match call_ai(&gen_prompt, proxy_port, api_key, use_claude).await {
                 Ok(output) => {
                     // Write agent immediately as it's generated
                     let agent_dir = profile.root.join(".claude").join("agents");
@@ -452,7 +461,7 @@ pub async fn run_pipeline(
             agent_names.join(", ")
         );
 
-        match call_ai(&claudemd_prompt, proxy_port, api_key).await {
+        match call_ai(&claudemd_prompt, proxy_port, api_key, use_claude).await {
             Ok(content) => {
                 eprintln!("        Generated CLAUDE.md");
                 Some(content)

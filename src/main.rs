@@ -592,11 +592,14 @@ async fn run_scan(args: &[String]) {
     }
 
     // Steps 2-6: AI pipeline
-    if cfg.api_key.is_empty() {
-        eprintln!("  Error: No DeepSeek API key configured. Run 'aismush-start' first to set it up.");
-        return;
+    // If no DeepSeek key, use Claude (works in direct mode)
+    let use_claude = cfg.api_key.is_empty() || cfg.force_provider.as_deref() == Some("claude");
+    if use_claude {
+        eprintln!("        Using Claude for analysis (no DeepSeek key or direct mode)");
+    } else {
+        eprintln!("        Using DeepSeek for analysis (cost: ~$0.03)");
     }
-    match scan::run_pipeline(&profile, &existing, cfg.port, &cfg.api_key).await {
+    match scan::run_pipeline(&profile, &existing, cfg.port, &cfg.api_key, use_claude).await {
         Ok(result) => {
             // Write artifacts
             eprintln!("  [6/6] Writing artifacts...");
