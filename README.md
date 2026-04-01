@@ -253,7 +253,10 @@ A: Yes. Set `FORCE_PROVIDER=claude` (no savings, full Claude) or `FORCE_PROVIDER
 A: No. It sends requests to localhost instead of api.anthropic.com, but the API format is identical. All Claude Code features work normally.
 
 **Q: What if DeepSeek is down?**
-A: The proxy automatically falls back to Claude when DeepSeek returns errors (500, 502, timeout). Your work is never blocked.
+A: DeepSeek 500/502 errors return immediately with a clear message. Set `FORCE_PROVIDER=claude` to bypass.
+
+**Q: What if Claude is down or rate-limited?**
+A: The proxy automatically falls back to DeepSeek — it trims context to fit DeepSeek's window and sends the request there. Your work is never blocked. Both providers have to be down simultaneously for a request to fail.
 
 **Q: Is my data sent anywhere?**
 A: Your requests go to the same APIs you'd normally use (Anthropic + DeepSeek). The proxy runs locally — no third-party servers, no telemetry, no data collection.
