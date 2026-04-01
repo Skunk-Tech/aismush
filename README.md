@@ -26,13 +26,15 @@ AISmush automatically detects what kind of work each turn requires:
 
 ## Features
 
-### Project Scanner (`aismush --scan`)
-- Scans your codebase and generates optimized Claude Code agents
-- Detects languages, frameworks, key files, and project patterns
-- Creates task-specific agents: code-reviewer, debugger, language experts, test-runner, explorer
+### AI-Powered Project Scanner (`aismush --scan`)
+- Scans your codebase, reads actual code, sends to AI for deep analysis
+- Full pipeline: Analyze → Plan → Generate per-domain → Synthesize (5-7 AI calls)
+- Generates agents deeply customized to YOUR code patterns, conventions, and architecture
+- Creates `.claude/agents/`, `.claude/skills/`, and `CLAUDE.md` — all project-specific
 - Each agent assigned the optimal model: Haiku for cheap tasks, Sonnet for complex work
-- Generates `.claude/agents/` directory — ready to use immediately
-- One command: `aismush --scan /path/to/project`
+- Detects existing `.claude/` files and skips them (use `--force` to overwrite)
+- Auto-starts proxy if not running — truly one command
+- Costs ~$0.03 per scan via DeepSeek through the proxy
 
 ### Smart Model Routing
 - Automatically routes each turn to Claude or DeepSeek based on the task
