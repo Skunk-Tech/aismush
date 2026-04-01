@@ -99,6 +99,26 @@ if [ -z "$DEEPSEEK_API_KEY" ]; then
         exit 1
     fi
 
+    # Validate the key
+    echo "  Testing key..."
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X POST https://api.deepseek.com/v1/chat/completions \
+        -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d '{"model":"deepseek-chat","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+        2>/dev/null)
+
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "429" ]; then
+        echo "  Key is valid!"
+    else
+        echo "  Key validation failed (HTTP $HTTP_CODE)."
+        echo "  Check your key at https://platform.deepseek.com/api_keys"
+        read -p "  Save anyway? (y/n): " SAVE_ANYWAY
+        if [ "$SAVE_ANYWAY" != "y" ]; then
+            exit 1
+        fi
+    fi
+
     # Save it so they never have to do this again
     echo "{\"apiKey\":\"$DEEPSEEK_API_KEY\"}" > "$CONFIG"
     export DEEPSEEK_API_KEY

@@ -252,19 +252,44 @@ A: Yes. Set `FORCE_PROVIDER=claude` (no savings, full Claude) or `FORCE_PROVIDER
 A: No. It sends requests to localhost instead of api.anthropic.com, but the API format is identical. All Claude Code features work normally.
 
 **Q: What if DeepSeek is down?**
-A: Requests that fail on DeepSeek will error. In that case, set `FORCE_PROVIDER=claude` to bypass DeepSeek entirely.
+A: The proxy automatically falls back to Claude when DeepSeek returns errors (500, 502, timeout). Your work is never blocked.
 
 **Q: Is my data sent anywhere?**
 A: Your requests go to the same APIs you'd normally use (Anthropic + DeepSeek). The proxy runs locally — no third-party servers, no telemetry, no data collection.
 
 **Q: Does it work with Claude Code in VS Code?**
-A: Yes. Set `ANTHROPIC_BASE_URL=http://localhost:1849` in your VS Code settings, or use `start.sh` which handles this automatically.
+A: Yes. Set `ANTHROPIC_BASE_URL=http://localhost:1849` in your VS Code settings, or use `start.sh` / `aismush-start` which handles this automatically.
+
+**Q: Does it work with the Anthropic API / SDK directly?**
+A: Yes. Any application that uses the Anthropic Messages API works — just set `ANTHROPIC_BASE_URL=http://localhost:1849`. This includes the Anthropic Python/TypeScript SDKs, Claude Code CLI, Claude Code VS Code extension, and any custom integration.
+
+**Q: How do I check if the proxy is running?**
+A: Run `aismush --status` from any terminal, or visit `http://localhost:1849/dashboard`.
+
+## CLI Reference
+
+```bash
+aismush              # Start the proxy server
+aismush --version    # Show version
+aismush --status     # Check if running, show quick stats
+aismush --config     # Show current configuration
+aismush --help       # Show help
+
+aismush-start        # Start proxy + launch Claude Code (recommended)
+```
 
 ## Requirements
 
-- [Claude Code](https://claude.ai/code) CLI installed
+- [Claude Code](https://claude.ai/code) CLI installed (or any Anthropic API client)
 - [DeepSeek API key](https://platform.deepseek.com/api_keys) (free tier available)
 - Linux x86_64, macOS (Intel or Apple Silicon), or Windows x86_64
+
+## Uninstall
+
+```bash
+rm ~/.local/bin/aismush ~/.local/bin/aismush-start
+rm -rf ~/.hybrid-proxy/
+```
 
 ## License
 

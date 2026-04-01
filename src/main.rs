@@ -37,13 +37,66 @@ fn json_resp(status: StatusCode, body: &str) -> Response<BoxBody<Bytes, hyper::E
         .unwrap()
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[tokio::main]
 async fn main() {
+    // Handle CLI flags before anything else
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("aismush {}", VERSION);
+        return;
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("AISmush v{} — Hybrid Claude/DeepSeek Proxy", VERSION);
+        println!();
+        println!("USAGE:");
+        println!("  aismush              Start the proxy server");
+        println!("  aismush --version    Show version");
+        println!("  aismush --status     Check if proxy is running");
+        println!("  aismush --config     Show current configuration");
+        println!();
+        println!("The proxy reads config from:");
+        println!("  1. Environment variables (DEEPSEEK_API_KEY, PROXY_PORT)");
+        println!("  2. ./config.json or ./.deepseek-proxy.json");
+        println!("  3. ~/.hybrid-proxy/config.json");
+        println!();
+        println!("Dashboard: http://localhost:PORT/dashboard");
+        return;
+    }
+    if args.iter().any(|a| a == "--status") {
+        let cfg = config::ProxyConfig::load();
+        match reqwest_lite(&format!("http://127.0.0.1:{}/stats", cfg.port)).await {
+            Some(body) => {
+                println!("AISmush is running on port {}", cfg.port);
+                if let Ok(s) = serde_json::from_str::<serde_json::Value>(&body) {
+                    println!("  Requests: {} (Claude: {}, DeepSeek: {})",
+                        s["total_requests"], s["claude_turns"], s["deepseek_turns"]);
+                    if let Some(cost) = s["actual_cost"].as_f64() {
+                        println!("  Cost: ${:.4} (saved ${:.4}, {:.1}%)",
+                            cost, s["savings"].as_f64().unwrap_or(0.0), s["savings_percent"].as_f64().unwrap_or(0.0));
+                    }
+                }
+            }
+            None => println!("AISmush is not running (port {})", cfg.port),
+        }
+        return;
+    }
+    if args.iter().any(|a| a == "--config") {
+        let cfg = config::ProxyConfig::load();
+        println!("DeepSeek Key: {}", if cfg.api_key.is_empty() { "(not set)".into() } else { format!("{}...", &cfg.api_key[..8.min(cfg.api_key.len())]) });
+        println!("Port:         {}", cfg.port);
+        println!("Mode:         {}", cfg.force_provider.as_deref().unwrap_or("hybrid"));
+        println!("Verbose:      {}", cfg.verbose);
+        println!("Data Dir:     {}", cfg.data_dir.display());
+        println!("Database:     {}", cfg.db_path.display());
+        return;
+    }
+
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    // Load config
     let cfg = config::ProxyConfig::load();
 
     // Init logging
@@ -243,9 +296,9 @@ async fn handle(
     }
 
     // ── Memory injection ────────────────────────────────────────────────
+    let project_path = parsed.as_ref().map(|b| memory::detect_project(b)).unwrap_or_else(|| "default".to_string());
     if let (Some(ref db), Some(ref mut body_val)) = (&state.db, &mut parsed) {
-        let project = memory::detect_project(body_val);
-        memory::inject_memories(db, body_val, &project).await;
+        memory::inject_memories(db, body_val, &project_path).await;
     }
 
     // ── Route decision ──────────────────────────────────────────────────
@@ -280,8 +333,31 @@ async fn handle(
     let comp_final = comp_stats.compressed_bytes as u64;
 
     if route.provider == "claude" {
-        forward::claude(&parts, &final_body, &path, &model, route.reason, comp_orig, comp_final, &state).await
+        forward::claude(&parts, &final_body, &path, &model, route.reason, &project_path, comp_orig, comp_final, &state).await
     } else {
-        forward::deepseek(&final_body, &path, &parsed, &model, route.reason, comp_orig, comp_final, &state).await
+        forward::deepseek(&final_body, &path, &parsed, &model, route.reason, &project_path, comp_orig, comp_final, &state).await
     }
 }
+
+/// Tiny HTTP GET for --status check (localhost only).
+async fn reqwest_lite(url: &str) -> Option<String> {
+    let port = config::ProxyConfig::load().port;
+    let addr = format!("127.0.0.1:{}", port);
+    let stream = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::net::TcpStream::connect(&addr),
+    ).await.ok()?.ok()?;
+
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.ok()?;
+    tokio::spawn(conn);
+
+    let req = Request::builder()
+        .uri(url)
+        .body(Full::new(Bytes::new()).map_err(|n| -> hyper::Error { match n {} }).boxed())
+        .ok()?;
+
+    let resp = sender.send_request(req).await.ok()?;
+    let body = resp.into_body().collect().await.ok()?;
+    Some(String::from_utf8_lossy(&body.to_bytes()).to_string())
+}
+

@@ -10,6 +10,7 @@ use tracing::{debug, error, info};
 
 use crate::cost;
 use crate::db;
+use crate::memory;
 use crate::state::ProxyState;
 use crate::tokens;
 
@@ -32,6 +33,7 @@ pub async fn claude(
     path: &str,
     model: &str,
     route_reason: &str,
+    project_path: &str,
     comp_original: u64,
     comp_final: u64,
     state: &Arc<ProxyState>,
@@ -66,6 +68,7 @@ pub async fn claude(
             let state2 = state.clone();
             let model = model.to_string();
             let reason = route_reason.to_string();
+            let project = project_path.to_string();
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
 
             tokio::spawn(async move {
@@ -90,32 +93,38 @@ pub async fn claude(
 
                 let usage = tokens::extract_usage(&stream_data);
                 let latency = start.elapsed().as_millis() as u64;
-                let costs = cost::calculate("claude", &model, usage.input_tokens, usage.output_tokens);
 
-                // Update in-memory stats
+                // Fallback token estimate if SSE parsing returned 0
+                let input_tokens = if usage.input_tokens > 0 { usage.input_tokens } else { (total_bytes / 4) as u64 };
+                let output_tokens = if usage.output_tokens > 0 { usage.output_tokens } else { (total_bytes / 8) as u64 };
+
+                let costs = cost::calculate("claude", &model, input_tokens, output_tokens);
+
                 {
                     let mut st = state2.stats.lock().await;
                     st.total_requests += 1;
                     st.claude_turns += 1;
                     st.claude_bytes += total_bytes;
-                    st.estimated_tokens_routed += usage.input_tokens + usage.output_tokens;
+                    st.estimated_tokens_routed += input_tokens + output_tokens;
                 }
 
-                // Persist to DB
                 if let Some(ref db) = state2.db {
                     db::log_request(
                         db, "claude", &model, &reason,
-                        usage.input_tokens, usage.output_tokens,
+                        input_tokens, output_tokens,
                         usage.cache_read_tokens, usage.cache_write_tokens,
                         total_bytes, latency,
                         costs.actual_cost, costs.claude_equiv_cost,
                         comp_original, comp_final,
                     ).await;
+
+                    // Extract memories from response
+                    memory::extract_and_store(db, &project, &stream_data).await;
                 }
 
                 debug!(
                     provider = "claude", model = %model,
-                    input = usage.input_tokens, output = usage.output_tokens,
+                    input = input_tokens, output = output_tokens,
                     cost = format!("${:.4}", costs.actual_cost),
                     latency_ms = latency,
                     "Complete"
@@ -138,6 +147,7 @@ pub async fn deepseek(
     parsed: &Option<Value>,
     model: &str,
     route_reason: &str,
+    project_path: &str,
     comp_original: u64,
     comp_final: u64,
     state: &Arc<ProxyState>,
@@ -176,6 +186,19 @@ pub async fn deepseek(
     match state.client.request(req).await {
         Ok(resp) => {
             let status = resp.status();
+
+            // If DeepSeek returns server error, return clear error message
+            if status.as_u16() >= 500 {
+                let err_body = resp.into_body().collect().await
+                    .map(|b| String::from_utf8_lossy(&b.to_bytes()).to_string())
+                    .unwrap_or_default();
+                error!(status = status.as_u16(), "DeepSeek server error, consider FORCE_PROVIDER=claude");
+                return Ok(json_resp(status, &format!(
+                    r#"{{"error":"DeepSeek returned {}. The proxy will retry on Claude for future requests if errors persist.","details":{}}}"#,
+                    status, serde_json::to_string(&err_body).unwrap_or("\"\"".into())
+                )));
+            }
+
             let mut rb = Response::builder().status(status);
             for (k, v) in resp.headers() { rb = rb.header(k, v); }
 
@@ -183,6 +206,7 @@ pub async fn deepseek(
             let state2 = state.clone();
             let model = model.to_string();
             let reason = route_reason.to_string();
+            let project = project_path.to_string();
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
 
             tokio::spawn(async move {
@@ -207,30 +231,36 @@ pub async fn deepseek(
 
                 let usage = tokens::extract_usage(&stream_data);
                 let latency = start.elapsed().as_millis() as u64;
-                let costs = cost::calculate("deepseek", "deepseek-chat", usage.input_tokens, usage.output_tokens);
+
+                let input_tokens = if usage.input_tokens > 0 { usage.input_tokens } else { (total_bytes / 4) as u64 };
+                let output_tokens = if usage.output_tokens > 0 { usage.output_tokens } else { (total_bytes / 8) as u64 };
+
+                let costs = cost::calculate("deepseek", "deepseek-chat", input_tokens, output_tokens);
 
                 {
                     let mut st = state2.stats.lock().await;
                     st.total_requests += 1;
                     st.deepseek_turns += 1;
                     st.deepseek_bytes += total_bytes;
-                    st.estimated_tokens_routed += usage.input_tokens + usage.output_tokens;
+                    st.estimated_tokens_routed += input_tokens + output_tokens;
                 }
 
                 if let Some(ref db) = state2.db {
                     db::log_request(
                         db, "deepseek", &model, &reason,
-                        usage.input_tokens, usage.output_tokens,
+                        input_tokens, output_tokens,
                         usage.cache_read_tokens, usage.cache_write_tokens,
                         total_bytes, latency,
                         costs.actual_cost, costs.claude_equiv_cost,
                         comp_original, comp_final,
                     ).await;
+
+                    memory::extract_and_store(db, &project, &stream_data).await;
                 }
 
                 debug!(
                     provider = "deepseek",
-                    input = usage.input_tokens, output = usage.output_tokens,
+                    input = input_tokens, output = output_tokens,
                     cost = format!("${:.4}", costs.actual_cost),
                     saved = format!("${:.4}", costs.savings),
                     latency_ms = latency,
