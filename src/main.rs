@@ -291,7 +291,10 @@ async fn handle(
     };
 
     let mut parsed: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
-    let model = parsed.as_ref().and_then(|p| p["model"].as_str()).unwrap_or("?").to_string();
+    let model = parsed.as_ref()
+        .and_then(|p| p["model"].as_str())
+        .unwrap_or("claude")
+        .to_string();
     let project_path = parsed.as_ref().map(|b| memory::detect_project(b)).unwrap_or_else(|| "default".to_string());
 
     // ── Compress tool_result blocks (safe for both providers — only modifies
