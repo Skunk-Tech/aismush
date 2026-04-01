@@ -198,7 +198,7 @@ impl ProjectProfile {
 // ── AI pipeline ─────────────────────────────────────────────────────────────
 
 /// Send a prompt to the AI via the proxy and get a response.
-pub async fn call_ai(prompt: &str, proxy_port: u16) -> Result<String, String> {
+pub async fn call_ai(prompt: &str, proxy_port: u16, api_key: &str) -> Result<String, String> {
     let body = serde_json::json!({
         "model": "deepseek-chat",
         "max_tokens": 8192,
@@ -216,7 +216,7 @@ pub async fn call_ai(prompt: &str, proxy_port: u16) -> Result<String, String> {
             &url,
             "-H", "Content-Type: application/json",
             "-H", "anthropic-version: 2023-06-01",
-            "-H", "x-api-key: scan-via-proxy",
+            "-H", &format!("x-api-key: {}", api_key),
             "-d", &body_str,
         ])
         .output()
@@ -318,6 +318,7 @@ pub async fn run_pipeline(
     profile: &ProjectProfile,
     existing: &ExistingArtifacts,
     proxy_port: u16,
+    api_key: &str,
 ) -> Result<ScanResult, String> {
     // Step 1: Analysis
     eprintln!("  [2/6] Analyzing project (via DeepSeek)...");
@@ -327,7 +328,7 @@ pub async fn run_pipeline(
         &profile.config_summary(),
         &profile.code_summary(),
     );
-    let analysis_response = call_ai(&analysis_prompt, proxy_port).await?;
+    let analysis_response = call_ai(&analysis_prompt, proxy_port, api_key).await?;
     let analysis = extract_json(&analysis_response)?;
 
     let langs = analysis["languages"].as_array()
@@ -346,7 +347,7 @@ pub async fn run_pipeline(
         existing.agents.join(", ")
     };
     let planning_prompt = prompts::planning_prompt(&analysis.to_string(), &existing_list);
-    let planning_response = call_ai(&planning_prompt, proxy_port).await?;
+    let planning_response = call_ai(&planning_prompt, proxy_port, api_key).await?;
     let plan = extract_json(&planning_response)?;
 
     let planned_agents = plan["agents"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -376,7 +377,7 @@ pub async fn run_pipeline(
                 &profile.code_summary(),
             );
 
-            match call_ai(&gen_prompt, proxy_port).await {
+            match call_ai(&gen_prompt, proxy_port, api_key).await {
                 Ok(output) => {
                     agent_outputs.push(format!("AGENT:{}\n{}", name, output));
                     eprintln!(" ✓");
@@ -395,7 +396,7 @@ pub async fn run_pipeline(
     let combined = format!("Agent Outputs:\n{}\n\nPlanned Skills:\n{}", all_outputs, skills_json);
 
     let synthesis_prompt = prompts::synthesis_prompt(&combined, &analysis.to_string());
-    let synthesis_response = call_ai(&synthesis_prompt, proxy_port).await?;
+    let synthesis_response = call_ai(&synthesis_prompt, proxy_port, api_key).await?;
     let synthesis = extract_json(&synthesis_response)?;
 
     let total_agents = synthesis["agents"].as_array().map(|a| a.len()).unwrap_or(0);

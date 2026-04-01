@@ -580,7 +580,11 @@ async fn run_scan(args: &[String]) {
     }
 
     // Steps 2-6: AI pipeline
-    match scan::run_pipeline(&profile, &existing, cfg.port).await {
+    if cfg.api_key.is_empty() {
+        eprintln!("  Error: No DeepSeek API key configured. Run 'aismush-start' first to set it up.");
+        return;
+    }
+    match scan::run_pipeline(&profile, &existing, cfg.port, &cfg.api_key).await {
         Ok(result) => {
             // Write artifacts
             eprintln!("  [6/6] Writing artifacts...");
