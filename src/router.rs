@@ -26,6 +26,13 @@ pub fn decide(body: &Option<Value>, force_provider: &Option<String>) -> RouteDec
 
     let estimated_tokens = tokens::estimate_tokens(b);
 
+    // If the request explicitly asks for deepseek model, route there
+    if let Some(model) = b["model"].as_str() {
+        if model.starts_with("deepseek") {
+            return RouteDecision { provider: "deepseek", reason: "model-requested", estimated_tokens };
+        }
+    }
+
     let Some(msgs) = b["messages"].as_array() else {
         return RouteDecision { provider: "claude", reason: "no-messages", estimated_tokens };
     };
