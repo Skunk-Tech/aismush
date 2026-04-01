@@ -271,8 +271,10 @@ async fn handle(
 
     let mut parsed: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
     let model = parsed.as_ref().and_then(|p| p["model"].as_str()).unwrap_or("?").to_string();
+    let project_path = parsed.as_ref().map(|b| memory::detect_project(b)).unwrap_or_else(|| "default".to_string());
 
-    // ── Compress tool_result blocks ─────────────────────────────────────
+    // ── Compress tool_result blocks (safe for both providers — only modifies
+    //    content strings inside tool_result, never changes message structure) ──
     let comp_stats = if let Some(ref mut body_val) = parsed {
         compress::compress_request_body(body_val)
     } else {
@@ -293,8 +295,7 @@ async fn handle(
         st.compressed_final_bytes += comp_stats.compressed_bytes as u64;
     }
 
-    // ── Memory injection ────────────────────────────────────────────────
-    let project_path = parsed.as_ref().map(|b| memory::detect_project(b)).unwrap_or_else(|| "default".to_string());
+    // ── Memory injection (safe — prepends to system prompt, never touches messages) ──
     if let (Some(ref db), Some(ref mut body_val)) = (&state.db, &mut parsed) {
         memory::inject_memories(db, body_val, &project_path).await;
     }
@@ -303,26 +304,28 @@ async fn handle(
     let mut route = router::decide(&parsed, &state.config.force_provider);
 
     // ── Context window management ─────────────────────────────────────
-    // Run AFTER routing so we know the target provider
+    // ONLY for DeepSeek turns. Claude has 200K window and doesn't need trimming.
+    // Trimming messages breaks tool_use/tool_result pairs → causes 400 errors on Claude.
     let mut body_modified = comp_stats.tool_results_processed > 0;
-    if let Some(ref mut body_val) = parsed {
-        let ctx = context::prepare(body_val, route.provider);
-        if ctx.body_modified { body_modified = true; }
-        if let Some(forced) = ctx.force_provider {
-            route.provider = forced;
-            route.reason = ctx.action;
+    if route.provider == "deepseek" {
+        if let Some(ref mut body_val) = parsed {
+            let ctx = context::prepare(body_val, "deepseek");
+            if ctx.body_modified { body_modified = true; }
+            if let Some(forced) = ctx.force_provider {
+                route.provider = forced;
+                route.reason = ctx.action;
+            }
+            if context::ensure_fits(body_val, route.provider) {
+                body_modified = true;
+            }
         }
+    }
 
-        // Ensure it fits the chosen provider's window
-        if context::ensure_fits(body_val, route.provider) {
-            body_modified = true;
-        }
-
+    if let Some(ref body_val) = parsed {
         route.estimated_tokens = tokens::estimate_tokens(body_val);
     }
 
     let display_model = if route.provider == "deepseek" { "deepseek-chat".to_string() } else { model.clone() };
-
     info!(
         provider = route.provider,
         model = %display_model,
