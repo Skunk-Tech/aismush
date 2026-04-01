@@ -45,10 +45,10 @@ Prevents DeepSeek from choking on long conversations:
 | Context Size | Strategy |
 |---|---|
 | < 55K tokens | No intervention — both providers handle this fine |
-| 55K – 64K | Truncate old tool results, try DeepSeek |
-| 64K – 120K | Prefer Claude, truncate old tool results |
-| 120K – 180K | Claude + trim old messages from conversation middle |
-| > 180K | Emergency trim — aggressive message removal, keep first 2 + last 6 |
+| 55K – 64K | Truncate old tool results to fit DeepSeek |
+| 64K+ | Route to Claude (200K window, no trimming needed) |
+
+For DeepSeek turns only, old tool results are truncated and messages trimmed if needed. Claude turns are never trimmed — this preserves tool_use/tool_result pairs that Claude requires.
 
 ### Persistent Memory
 - Extracts key facts from AI responses (architecture decisions, bug fixes, project changes)
