@@ -17,6 +17,8 @@ pub struct ProxyState {
     pub client: HttpClient,
     pub stats: Mutex<Stats>,
     pub db: Option<Db>,
+    /// Serialize API requests to prevent concurrent tool use issues
+    pub request_lock: tokio::sync::Semaphore,
 }
 
 #[derive(Default, Debug, serde::Serialize)]
@@ -39,6 +41,7 @@ impl ProxyState {
             client,
             stats: Mutex::new(Stats::default()),
             db,
+            request_lock: tokio::sync::Semaphore::new(1), // One request at a time
         })
     }
 }

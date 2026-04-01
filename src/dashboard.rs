@@ -85,6 +85,7 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
       <span>All-Claude: <span class="red" id="equiv-cost">$0</span></span>
       <span>Saved: <span class="green" id="saved-cost">$0</span></span>
     </div>
+    <div id="potential-savings" style="margin-top:8px;font-size:12px;display:none"></div>
   </div>
 
   <div class="section">
@@ -166,6 +167,21 @@ async function refresh() {{
     document.getElementById('actual-cost').textContent = fmt(s.actual_cost || 0);
     document.getElementById('equiv-cost').textContent = fmt(s.claude_equiv_cost || 0);
     document.getElementById('saved-cost').textContent = fmt(s.savings || 0);
+
+    // Show potential savings for direct mode users
+    const potential = s.potential_routing_savings || 0;
+    const potentialEl = document.getElementById('potential-savings');
+    if (potentialEl) {{
+      if (potential > 0 && s.deepseek_turns === 0) {{
+        potentialEl.style.display = 'block';
+        potentialEl.innerHTML = `<span style="color:var(--yellow)">Tip: Enable smart routing to save an additional ${{fmt(potential)}} — tool-result turns would use DeepSeek at 1/10th the cost.</span>`;
+      }} else if (potential > 0) {{
+        potentialEl.style.display = 'block';
+        potentialEl.innerHTML = `<span style="color:var(--dim)">Routing is saving you ${{fmt(s.savings||0)}} compared to all-Claude.</span>`;
+      }} else {{
+        potentialEl.style.display = 'none';
+      }}
+    }}
 
     // Load recent requests
     const hr = await fetch('/history');

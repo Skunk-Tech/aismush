@@ -25,8 +25,17 @@ fi
 PORT="${PROXY_PORT:-1849}"
 lsof -ti:$PORT 2>/dev/null | xargs kill -9 2>/dev/null || true
 
-echo ""
-echo "  AISmush - Hybrid Claude + DeepSeek Proxy"
+DIRECT_FLAG=""
+if [ "$1" = "--direct" ]; then
+    DIRECT_FLAG="--direct"
+    echo ""
+    echo "  AISmush - Direct Mode (Claude only)"
+    echo "  Compression, memory, agents, and tracking still active"
+    shift
+else
+    echo ""
+    echo "  AISmush - Smart Routing Mode"
+fi
 echo "  Port:      $PORT"
 echo "  Dashboard: http://localhost:$PORT/dashboard"
 echo "  Log:       $LOGFILE"
@@ -34,7 +43,7 @@ echo ""
 
 if [ "$1" = "--proxy-only" ]; then
     echo "  ANTHROPIC_BASE_URL=http://localhost:$PORT claude"
-    exec "$BINARY"
+    exec "$BINARY" $DIRECT_FLAG
 fi
 
 # Check for update notification from previous run
@@ -49,7 +58,7 @@ if [ -f "$UPDATE_FILE" ]; then
 fi
 
 # stdout → log, stderr passes through to terminal (for update notifications)
-"$BINARY" > "$LOGFILE" &
+"$BINARY" $DIRECT_FLAG > "$LOGFILE" &
 PROXY_PID=$!
 sleep 0.5
 

@@ -53,12 +53,13 @@ async fn main() {
         println!("AISmush v{} — Smart AI Coding Proxy", VERSION);
         println!();
         println!("USAGE:");
-        println!("  aismush              Start the proxy server");
+        println!("  aismush              Start the proxy server (smart routing)");
+        println!("  aismush --direct     Start in direct mode (Claude only, no DeepSeek)");
+        println!("  aismush --scan       Scan codebase and generate optimized agents");
         println!("  aismush --version    Show version");
         println!("  aismush --status     Check if proxy is running");
         println!("  aismush --config     Show current configuration");
         println!("  aismush --upgrade    Upgrade to latest version");
-        println!("  aismush --scan       Scan codebase and generate optimized agents");
         println!();
         println!("The proxy reads config from:");
         println!("  1. Environment variables (DEEPSEEK_API_KEY, PROXY_PORT)");
@@ -112,7 +113,7 @@ async fn main() {
     // Check for updates BEFORE server starts (prints to stderr before log redirect)
     check_for_updates().await;
 
-    let cfg = config::ProxyConfig::load();
+    let mut cfg = config::ProxyConfig::load();
 
     // Init logging
     let filter = if cfg.verbose { "debug" } else { "info" };
@@ -131,7 +132,11 @@ async fn main() {
         info!(key = &cfg.api_key[..8.min(cfg.api_key.len())], "DeepSeek key loaded");
     }
 
-    if let Some(ref fp) = cfg.force_provider {
+    // --direct flag forces Claude-only mode
+    if args.iter().any(|a| a == "--direct") {
+        cfg.force_provider = Some("claude".to_string());
+        info!("Direct mode (Claude only — compression + memory + agents still active)");
+    } else if let Some(ref fp) = cfg.force_provider {
         info!(provider = %fp, "Forced provider");
     } else {
         info!("Smart routing mode");
@@ -397,7 +402,9 @@ async fn handle(
     // Debug: dump outgoing body
     let _ = std::fs::write(debug_dir.join(format!("{}-outgoing-{}.json", req_num, route.provider)), &final_body);
 
-    // ── Forward ─────────────────────────────────────────────────────────
+    // ── Forward (serialized — prevents concurrent tool use issues) ─────
+    let _permit = state.request_lock.acquire().await.unwrap();
+
     let comp_orig = comp_stats.original_bytes as u64;
     let comp_final = comp_stats.compressed_bytes as u64;
 

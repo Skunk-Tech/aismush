@@ -159,6 +159,15 @@ pub async fn get_stats(db: &Db) -> serde_json::Value {
         let comp_final: i64 = conn.query_row("SELECT COALESCE(SUM(compressed_final),0) FROM requests", [], |r| r.get(0)).unwrap_or(0);
         let comp_count: i64 = conn.query_row("SELECT COUNT(*) FROM requests WHERE compressed_original > 0", [], |r| r.get(0)).unwrap_or(0);
 
+        // Calculate potential savings: what if tool-result turns used DeepSeek?
+        // Tool-result turns sent to Claude cost X, same tokens on DeepSeek would cost X * (0.27/3.0) for input
+        let claude_tool_cost: f64 = conn.query_row(
+            "SELECT COALESCE(SUM(actual_cost),0) FROM requests WHERE provider='claude' AND route_reason IN ('tool-result','mid-session')",
+            [], |r| r.get(0)
+        ).unwrap_or(0.0);
+        // DeepSeek is ~10x cheaper than Sonnet for these turns
+        let potential_routing_savings = claude_tool_cost * 0.9;
+
         serde_json::json!({
             "total_requests": total,
             "claude_turns": claude,
@@ -169,6 +178,7 @@ pub async fn get_stats(db: &Db) -> serde_json::Value {
             "claude_equiv_cost": (equiv_cost * 10000.0).round() / 10000.0,
             "savings": (savings * 10000.0).round() / 10000.0,
             "savings_percent": (savings_pct * 10.0).round() / 10.0,
+            "potential_routing_savings": (potential_routing_savings * 10000.0).round() / 10000.0,
             "avg_latency_ms": avg_latency.round() as i64,
             "compressed_requests": comp_count,
             "compressed_original_bytes": comp_orig,

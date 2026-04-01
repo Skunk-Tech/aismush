@@ -89,6 +89,20 @@ Open `http://localhost:1849/dashboard` to see:
 - Connection pooling with keep-alive (no TLS handshake per request)
 - ~3.5 MB binary, ~15 MB memory usage
 
+## Two Modes
+
+**Smart Routing** (default) — Routes between Claude and DeepSeek. Max savings (~90%). Requires a DeepSeek API key.
+```bash
+aismush-start
+```
+
+**Direct Mode** — Claude only, no DeepSeek needed. You still get compression, memory, agents, context management, and cost tracking. The dashboard shows how much you *could* save by enabling smart routing.
+```bash
+aismush-start --direct
+```
+
+Both modes give you AI-generated project agents, persistent memory, context compression, and the full dashboard.
+
 ## Quick Start
 
 ### One-Line Install (Linux / macOS)
@@ -285,7 +299,8 @@ A: Run `aismush --status` from any terminal, or visit `http://localhost:1849/das
 ## CLI Reference
 
 ```bash
-aismush              # Start the proxy server
+aismush              # Start the proxy server (smart routing)
+aismush --direct     # Start in direct mode (Claude only, still compresses + tracks)
 aismush --scan       # Scan codebase, generate optimized agents
 aismush --version    # Show version
 aismush --status     # Check if running, show quick stats
