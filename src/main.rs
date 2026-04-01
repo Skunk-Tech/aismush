@@ -50,7 +50,7 @@ async fn main() {
         return;
     }
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("AISmush v{} — Hybrid Claude/DeepSeek Proxy", VERSION);
+        println!("AISmush v{} — Smart AI Coding Proxy", VERSION);
         println!();
         println!("USAGE:");
         println!("  aismush              Start the proxy server");
@@ -134,7 +134,7 @@ async fn main() {
     if let Some(ref fp) = cfg.force_provider {
         info!(provider = %fp, "Forced provider");
     } else {
-        info!("Hybrid routing mode");
+        info!("Smart routing mode");
     }
 
     info!(path = %cfg.data_dir.display(), "Data directory");

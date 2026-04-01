@@ -15,7 +15,7 @@ pub async fn render(db: &Option<Db>, port: u16) -> String {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Hybrid Proxy Dashboard</title>
+<title>AISmush Dashboard</title>
 <style>
 :root {{
   --bg: #0d1117; --card: #161b22; --border: #30363d;
@@ -64,7 +64,7 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
 </head>
 <body>
 
-<h1>Hybrid Proxy</h1>
+<h1>AISmush</h1>
 <p class="sub">Smart routing · Context compression · Persistent memory · Cost tracking</p>
 
 <div class="tabs">
