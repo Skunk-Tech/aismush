@@ -384,8 +384,11 @@ fn smart_truncate_data(input: &str, max_chars: usize) -> String {
     if input.len() <= max_chars {
         return input.to_string();
     }
-    let truncated = &input[..max_chars];
-    let cut = truncated.rfind('\n').unwrap_or(max_chars);
+    // Find safe char boundary
+    let mut end = max_chars;
+    while end > 0 && !input.is_char_boundary(end) { end -= 1; }
+    let truncated = &input[..end];
+    let cut = truncated.rfind('\n').unwrap_or(end);
     format!("{}\n[... {} chars total, showing first {}]", &input[..cut], input.len(), cut)
 }
 

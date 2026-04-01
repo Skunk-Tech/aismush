@@ -169,7 +169,7 @@ impl ProjectProfile {
         self.config_files.iter()
             .map(|(path, content)| {
                 let truncated = if content.len() > 500 {
-                    format!("{}...", &content[..500])
+                    format!("{}...", safe_truncate(content, 500))
                 } else {
                     content.clone()
                 };
@@ -184,7 +184,7 @@ impl ProjectProfile {
             .take(5) // Max 5 samples in the prompt
             .map(|(path, content)| {
                 let truncated = if content.len() > 800 {
-                    format!("{}...", &content[..800])
+                    format!("{}...", safe_truncate(content, 800))
                 } else {
                     content.clone()
                 };
@@ -649,6 +649,14 @@ fn walk_dir(
             callback(&path, rel);
         }
     }
+}
+
+/// Truncate a string safely at a char boundary.
+fn safe_truncate(s: &str, max: usize) -> &str {
+    if s.len() <= max { return s; }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    &s[..end]
 }
 
 fn read_first_n_lines(path: &Path, n: usize) -> Result<String, std::io::Error> {
