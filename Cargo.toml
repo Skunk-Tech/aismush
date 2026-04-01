@@ -12,7 +12,7 @@ hyper-rustls = { version = "0.27", features = ["http1", "http2", "ring", "webpki
 rustls = "0.23"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
