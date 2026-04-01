@@ -22,7 +22,7 @@ AISmush automatically detects what kind of work each turn requires:
 | Mid-session coding | **DeepSeek** | Following an established plan |
 | Large context (>50K tokens) | **Claude** | DeepSeek's window can't handle it |
 
-**Real-world result: 90%+ cost savings** on our first project (CTR Booster V2, a 2000+ file Rust/React/Node.js codebase).
+**Real-world result: 90%+ cost savings** on a large multi-language codebase (2000+ files across Rust, React, and Node.js).
 
 ## Features
 
