@@ -77,15 +77,33 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
 <div id="page-overview">
   <div class="grid" id="stats-grid"></div>
 
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+    <div class="section" style="margin:0">
+      <h2 style="font-size:13px">Compression Savings</h2>
+      <p style="font-size:11px;color:var(--dim);margin-bottom:8px">Tokens saved by stripping comments, dedup, truncation. Works in ALL modes.</p>
+      <div style="font-size:20px;font-weight:bold;color:var(--green)" id="comp-tokens-saved">0</div>
+      <div style="font-size:11px;color:var(--dim)">tokens saved</div>
+      <div style="font-size:14px;font-weight:bold;color:var(--yellow);margin-top:4px" id="comp-cost-saved">$0</div>
+      <div style="font-size:11px;color:var(--dim)">estimated cost saved</div>
+    </div>
+    <div class="section" style="margin:0">
+      <h2 style="font-size:13px">Routing Savings</h2>
+      <p style="font-size:11px;color:var(--dim);margin-bottom:8px">Money saved by sending mechanical turns to DeepSeek instead of Claude.</p>
+      <div style="font-size:20px;font-weight:bold;color:var(--green)" id="routing-saved">$0</div>
+      <div style="font-size:11px;color:var(--dim)">saved vs all-Claude</div>
+      <div style="font-size:14px;font-weight:bold;margin-top:4px" id="routing-pct">0%</div>
+      <div style="font-size:11px;color:var(--dim)" id="routing-hint"></div>
+    </div>
+  </div>
+
   <div class="section">
-    <h2>Cost Savings</h2>
+    <h2 style="font-size:13px">Total</h2>
     <div class="bar-bg"><div class="bar-fill" id="savings-bar" style="width:0%">0%</div></div>
     <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--dim)">
       <span>Actual: <span class="yellow" id="actual-cost">$0</span></span>
       <span>All-Claude: <span class="red" id="equiv-cost">$0</span></span>
-      <span>Saved: <span class="green" id="saved-cost">$0</span></span>
+      <span>Total Saved: <span class="green" id="saved-cost">$0</span></span>
     </div>
-    <div id="potential-savings" style="margin-top:8px;font-size:12px;display:none"></div>
   </div>
 
   <div class="section">
@@ -168,19 +186,33 @@ async function refresh() {{
     document.getElementById('equiv-cost').textContent = fmt(s.claude_equiv_cost || 0);
     document.getElementById('saved-cost').textContent = fmt(s.savings || 0);
 
-    // Show potential savings for direct mode users
+    // Compression savings
+    const compOrig = s.compressed_original_bytes || 0;
+    const compFinal = s.compressed_final_bytes || 0;
+    const compTokensSaved = Math.round((compOrig - compFinal) / 4); // ~4 chars per token
+    const compCostSaved = compTokensSaved * 3.0 / 1000000; // Sonnet input pricing
+    document.getElementById('comp-tokens-saved').textContent = fmtK(compTokensSaved);
+    document.getElementById('comp-cost-saved').textContent = fmt(compCostSaved);
+
+    // Routing savings
+    const routingSaved = s.savings || 0;
+    const routingPct = s.savings_percent || 0;
     const potential = s.potential_routing_savings || 0;
-    const potentialEl = document.getElementById('potential-savings');
-    if (potentialEl) {{
-      if (potential > 0 && s.deepseek_turns === 0) {{
-        potentialEl.style.display = 'block';
-        potentialEl.innerHTML = `<span style="color:var(--yellow)">Tip: Enable smart routing to save an additional ${{fmt(potential)}} — tool-result turns would use DeepSeek at 1/10th the cost.</span>`;
-      }} else if (potential > 0) {{
-        potentialEl.style.display = 'block';
-        potentialEl.innerHTML = `<span style="color:var(--dim)">Routing is saving you ${{fmt(s.savings||0)}} compared to all-Claude.</span>`;
-      }} else {{
-        potentialEl.style.display = 'none';
-      }}
+    document.getElementById('routing-saved').textContent = fmt(routingSaved);
+    const routingPctEl = document.getElementById('routing-pct');
+    const routingHint = document.getElementById('routing-hint');
+    if (s.deepseek_turns > 0) {{
+      routingPctEl.textContent = routingPct.toFixed(1) + '% cheaper';
+      routingPctEl.style.color = 'var(--green)';
+      routingHint.textContent = 'Smart routing active';
+    }} else if (potential > 0) {{
+      routingPctEl.textContent = fmt(potential) + ' potential';
+      routingPctEl.style.color = 'var(--yellow)';
+      routingHint.textContent = 'Enable smart routing to unlock this';
+    }} else {{
+      routingPctEl.textContent = 'N/A';
+      routingPctEl.style.color = 'var(--dim)';
+      routingHint.textContent = '';
     }}
 
     // Load recent requests

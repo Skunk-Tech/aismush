@@ -473,13 +473,18 @@ async fn report_stats(state: &Arc<ProxyState>) {
     // Read from DB for accurate cumulative stats (survives restarts)
     let body = if let Some(ref database) = state.db {
         let db_stats = db::get_stats(database).await;
+        let comp_orig = db_stats["compressed_original_bytes"].as_i64().unwrap_or(0);
+        let comp_final = db_stats["compressed_final_bytes"].as_i64().unwrap_or(0);
+        let comp_tokens_saved = (comp_orig - comp_final) / 4;
+        let comp_cost_saved = comp_tokens_saved as f64 * 3.0 / 1_000_000.0;
+
         serde_json::json!({
             "requests": db_stats["total_requests"].as_i64().unwrap_or(0),
             "claude_turns": db_stats["claude_turns"].as_i64().unwrap_or(0),
             "deepseek_turns": db_stats["deepseek_turns"].as_i64().unwrap_or(0),
-            "savings": db_stats["savings"].as_f64().unwrap_or(0.0),
-            "compressed_bytes": (db_stats["compressed_original_bytes"].as_i64().unwrap_or(0)
-                - db_stats["compressed_final_bytes"].as_i64().unwrap_or(0)),
+            "routing_savings": db_stats["savings"].as_f64().unwrap_or(0.0),
+            "compression_savings": (comp_cost_saved * 10000.0).round() / 10000.0,
+            "compressed_tokens": comp_tokens_saved,
             "version": VERSION,
         })
     } else {
