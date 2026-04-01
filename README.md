@@ -77,9 +77,11 @@ For DeepSeek turns only, old tool results are truncated and messages trimmed if 
 
 ### Live Dashboard
 Open `http://localhost:1849/dashboard` to see:
+- **Compression savings** — tokens saved by stripping comments/dedup (works in ALL modes, including direct)
+- **Routing savings** — money saved by sending turns to DeepSeek (smart routing mode)
+- In direct mode, shows how much you *could* save by enabling smart routing
 - Request counts, routing distribution
-- Cost savings bar with actual vs all-Claude comparison
-- Recent requests table
+- Recent requests table with per-request cost breakdown
 - Memory viewer with search and delete
 - Request history with full detail
 
