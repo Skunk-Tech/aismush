@@ -1,0 +1,6 @@
+/target
+*.db
+*.log
+.deepseek-proxy.json
+config.json
+.hybrid-proxy/
