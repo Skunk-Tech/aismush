@@ -6,6 +6,7 @@ mod dashboard;
 mod db;
 mod forward;
 mod memory;
+mod prompts;
 mod router;
 mod scan;
 mod state;
@@ -520,62 +521,106 @@ async fn report_stats(state: &Arc<ProxyState>) {
     }
 }
 
-/// Scan a project and generate optimized Claude Code agents.
+/// Scan a project and generate optimized Claude Code agents via AI analysis.
 async fn run_scan(args: &[String]) {
-    // Get project path (argument after --scan, or current directory)
     let project_path = args.iter()
         .position(|a| a == "--scan")
         .and_then(|i| args.get(i + 1))
         .map(|p| std::path::PathBuf::from(p))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
 
-    println!();
-    println!("  AISmush Scanner v{}", VERSION);
-    println!("  ─────────────────────────");
-    println!("  Scanning: {}", project_path.display());
-    println!();
+    let force = args.iter().any(|a| a == "--force");
+    let cfg = config::ProxyConfig::load();
 
-    // Scan the project
+    eprintln!();
+    eprintln!("  AISmush Scanner v{}", VERSION);
+    eprintln!("  ──────────────────────");
+    eprintln!("  Project: {}", project_path.display());
+    eprintln!();
+
+    // Check if proxy is running, if not start it temporarily
+    let mut started_proxy = false;
+    let proxy_running = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", cfg.port))
+        .await
+        .is_ok();
+
+    if !proxy_running {
+        eprintln!("  Starting proxy temporarily for AI analysis...");
+        let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("aismush"));
+        let _child = tokio::process::Command::new(&exe)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        // Wait for proxy to start
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", cfg.port)).await.is_ok() {
+                started_proxy = true;
+                break;
+            }
+        }
+        if !started_proxy {
+            eprintln!("  Error: Could not start proxy. Run 'aismush' in another terminal first.");
+            return;
+        }
+        eprintln!("  Proxy started on port {}", cfg.port);
+    }
+
+    // Step 1: Scan filesystem
+    eprintln!("  [1/6] Scanning filesystem...");
     let profile = scan::scan_project(&project_path);
+    eprintln!("        Found {} files", profile.total_files);
+    eprintln!("        Sampled {} config files + {} code files",
+        profile.config_files.len(), profile.sampled_code.len());
 
-    println!("  Files:      {}", profile.total_files);
-    println!("  Languages:  {}", profile.languages.join(", "));
-    println!("  Frameworks: {}", profile.frameworks.join(", "));
-    println!("  Key files:  {}", profile.key_files.len());
-    println!();
-
-    // Generate agents
-    let agents = scan::generate_agents(&profile);
-    println!("  Generating {} agents:", agents.len());
-    for (path, _) in &agents {
-        let name = path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        println!("    - {}", name);
+    // Detect existing artifacts
+    let existing = scan::detect_existing(&project_path);
+    if !existing.agents.is_empty() {
+        eprintln!("        Existing agents: {}", existing.agents.join(", "));
     }
-    println!();
 
-    // Write to disk
-    let written = scan::write_agents(&agents);
-    println!("  Written {} agent files to .claude/agents/", written);
-    println!();
+    // Steps 2-6: AI pipeline
+    match scan::run_pipeline(&profile, &existing, cfg.port).await {
+        Ok(result) => {
+            // Write artifacts
+            eprintln!("  [6/6] Writing artifacts...");
+            let summary = scan::write_artifacts(&project_path, &result, force);
 
-    // Show model routing
-    println!("  Cost optimization:");
-    for (path, content) in &agents {
-        let name = path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let model = if content.contains("model: haiku") {
-            "haiku (fast, cheap)"
-        } else if content.contains("model: sonnet") {
-            "sonnet (balanced)"
-        } else if content.contains("model: opus") {
-            "opus (max reasoning)"
-        } else {
-            "inherit"
-        };
-        println!("    {} → {}", name, model);
+            eprintln!();
+            eprintln!("  Summary:");
+            eprintln!("    Agents:    {} created, {} skipped", summary.agents_created, summary.agents_skipped);
+            eprintln!("    Skills:    {} created, {} skipped", summary.skills_created, summary.skills_skipped);
+            if summary.claude_md_created {
+                eprintln!("    CLAUDE.md: Created");
+            } else if summary.claude_md_skipped {
+                eprintln!("    CLAUDE.md: Skipped (exists, use --force to overwrite)");
+            }
+            eprintln!();
+            eprintln!("  Done! Run 'aismush-start' to use the generated agents.");
+        }
+        Err(e) => {
+            eprintln!();
+            eprintln!("  Error: {}", e);
+            eprintln!("  Make sure the proxy is running and DeepSeek API key is configured.");
+        }
     }
-    println!();
-    println!("  Done! Agents are ready. Run 'aismush-start' to use them.");
-    println!();
+
+    // Stop proxy if we started it
+    if started_proxy {
+        eprintln!("  Stopping temporary proxy...");
+        // Send shutdown signal
+        let _ = tokio::process::Command::new("curl")
+            .args(["-sf", &format!("http://localhost:{}/health", cfg.port)])
+            .output()
+            .await;
+        // Kill by port
+        let _ = tokio::process::Command::new("bash")
+            .args(["-c", &format!("lsof -ti:{} | xargs kill 2>/dev/null", cfg.port)])
+            .output()
+            .await;
+    }
+
+    eprintln!();
 }
 
 /// Self-upgrade by running the install script.

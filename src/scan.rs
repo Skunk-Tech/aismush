@@ -1,114 +1,481 @@
-//! Project scanner and agent generator.
+//! AI-powered project scanner.
 //!
-//! Scans a codebase, analyzes it through the proxy (DeepSeek = cheap),
-//! and generates optimized `.claude/agents/` and `.claude/skills/` files.
+//! Scans a codebase, sends to AI through our proxy for deep analysis,
+//! and generates optimized Claude Code agents, skills, and CLAUDE.md.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::io::Write;
 
-/// Detected project profile.
-#[derive(Debug)]
+use crate::prompts;
+
+// ── Project scanning ────────────────────────────────────────────────────────
+
+/// Full project profile after filesystem scan.
 pub struct ProjectProfile {
     pub root: PathBuf,
-    pub languages: Vec<String>,
-    pub frameworks: Vec<String>,
-    pub key_files: Vec<String>,
+    pub files_by_extension: HashMap<String, Vec<String>>,
+    pub config_files: Vec<(String, String)>, // (relative path, content)
+    pub sampled_code: Vec<(String, String)>, // (relative path, first 100 lines)
     pub total_files: usize,
-    pub file_samples: HashMap<String, Vec<String>>, // language -> sample file paths
+    pub directory_tree: String,
 }
 
-/// Scan a project directory and build a profile.
+/// What already exists in .claude/
+pub struct ExistingArtifacts {
+    pub agents: Vec<String>,
+    pub skills: Vec<String>,
+    pub has_claude_md: bool,
+}
+
+const IGNORE_DIRS: &[&str] = &[
+    "node_modules", ".git", "target", "dist", "build", "__pycache__",
+    ".next", ".nuxt", "vendor", "venv", ".venv", "env", ".env",
+    ".claude", ".roo", "coverage", ".mypy_cache", ".pytest_cache",
+    ".ruff_cache", ".eggs", "htmlcov",
+];
+
+const CONFIG_FILES: &[&str] = &[
+    "package.json", "Cargo.toml", "pyproject.toml", "setup.py",
+    "requirements.txt", "go.mod", "pom.xml", "build.gradle",
+    "Gemfile", "composer.json", "tsconfig.json", "Dockerfile",
+    "docker-compose.yml", "docker-compose.yaml", ".env.example",
+    "jest.config.js", "jest.config.ts", "jest.config.cjs",
+    "vitest.config.ts", "vitest.config.js", "vite.config.ts",
+    "next.config.js", "next.config.ts", "tailwind.config.js",
+    ".eslintrc.json", "eslint.config.js", "rustfmt.toml",
+    ".prettierrc", "Makefile", "CMakeLists.txt",
+];
+
+/// Scan a project and build a complete profile.
 pub fn scan_project(path: &Path) -> ProjectProfile {
-    let mut languages: HashMap<String, usize> = HashMap::new();
-    let mut frameworks: HashSet<String> = HashSet::new();
-    let mut key_files: Vec<String> = Vec::new();
-    let mut file_samples: HashMap<String, Vec<String>> = HashMap::new();
+    let mut files_by_ext: HashMap<String, Vec<String>> = HashMap::new();
+    let mut config_files: Vec<(String, String)> = Vec::new();
+    let mut all_files: Vec<(String, String)> = Vec::new(); // (rel_path, extension)
     let mut total_files = 0;
+    let mut tree_lines: Vec<String> = Vec::new();
 
-    let ignore = &[
-        "node_modules", ".git", "target", "dist", "build", "__pycache__",
-        ".next", ".nuxt", "vendor", "venv", ".venv", "env",
-        ".claude", ".roo", "coverage",
-    ];
-
-    walk_dir(path, ignore, &mut |file_path| {
+    walk_dir(path, path, IGNORE_DIRS, &mut |file_path, rel_path| {
         total_files += 1;
-        let rel = file_path.strip_prefix(path).unwrap_or(file_path);
-        let rel_str = rel.to_string_lossy().to_string();
-        let name = file_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let ext = file_path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+        let ext = file_path.extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let name = file_path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let rel_str = rel_path.to_string_lossy().to_string();
 
-        // Count languages by extension
-        let lang = match ext.as_str() {
-            "rs" => "Rust",
-            "py" | "pyw" => "Python",
-            "js" | "mjs" | "cjs" => "JavaScript",
-            "ts" | "tsx" => "TypeScript",
-            "go" => "Go",
-            "java" | "kt" => "Java/Kotlin",
-            "rb" => "Ruby",
-            "php" => "PHP",
-            "cs" => "C#",
-            "c" | "h" => "C",
-            "cpp" | "cc" | "hpp" => "C++",
-            "swift" => "Swift",
-            "dart" => "Dart",
-            "ex" | "exs" => "Elixir",
-            _ => "",
-        };
-        if !lang.is_empty() {
-            *languages.entry(lang.to_string()).or_default() += 1;
-            let samples = file_samples.entry(lang.to_string()).or_default();
-            if samples.len() < 5 {
-                samples.push(rel_str.clone());
+        files_by_ext.entry(ext.clone()).or_default().push(rel_str.clone());
+        all_files.push((rel_str.clone(), ext.clone()));
+
+        // Capture config files with their content
+        if CONFIG_FILES.iter().any(|c| *c == name) {
+            if let Ok(content) = read_first_n_lines(file_path, 100) {
+                config_files.push((rel_str.clone(), content));
             }
         }
 
-        // Detect frameworks from key files
-        match name.as_str() {
-            "Cargo.toml" => { frameworks.insert("Cargo/Rust workspace".into()); key_files.push(rel_str.clone()); }
-            "package.json" => { frameworks.insert("Node.js/npm".into()); key_files.push(rel_str.clone()); }
-            "pyproject.toml" | "setup.py" | "requirements.txt" => { frameworks.insert("Python project".into()); key_files.push(rel_str.clone()); }
-            "go.mod" => { frameworks.insert("Go module".into()); key_files.push(rel_str.clone()); }
-            "Gemfile" => { frameworks.insert("Ruby/Bundler".into()); key_files.push(rel_str.clone()); }
-            "composer.json" => { frameworks.insert("PHP/Composer".into()); key_files.push(rel_str.clone()); }
-            "Dockerfile" | "docker-compose.yml" | "docker-compose.yaml" => { frameworks.insert("Docker".into()); }
-            "vite.config.ts" | "vite.config.js" => { frameworks.insert("Vite".into()); }
-            "next.config.js" | "next.config.ts" | "next.config.mjs" => { frameworks.insert("Next.js".into()); }
-            "tailwind.config.js" | "tailwind.config.ts" => { frameworks.insert("Tailwind CSS".into()); }
-            "tsconfig.json" => { frameworks.insert("TypeScript".into()); key_files.push(rel_str.clone()); }
-            "jest.config.js" | "jest.config.ts" | "jest.config.cjs" => { frameworks.insert("Jest".into()); }
-            "vitest.config.ts" | "vitest.config.js" => { frameworks.insert("Vitest".into()); }
-            ".eslintrc.json" | ".eslintrc.js" | "eslint.config.js" => { frameworks.insert("ESLint".into()); }
-            "prisma" => { frameworks.insert("Prisma".into()); }
-            "CLAUDE.md" => { key_files.push(rel_str.clone()); }
-            "README.md" => { key_files.push(rel_str.clone()); }
-            _ => {}
-        }
-
-        // Detect frameworks from directory names
-        if rel_str.contains("/src/") || rel_str.starts_with("src/") {
-            // Check for specific patterns in source files
+        // Build tree (simplified — just track unique directories)
+        if let Some(parent) = rel_path.parent() {
+            let dir = parent.to_string_lossy().to_string();
+            if !dir.is_empty() && !tree_lines.contains(&dir) {
+                tree_lines.push(dir);
+            }
         }
     });
 
-    // Sort languages by file count
-    let mut lang_vec: Vec<(String, usize)> = languages.into_iter().collect();
-    lang_vec.sort_by(|a, b| b.1.cmp(&a.1));
+    // Sample code files: up to 3 per language extension
+    let code_extensions = &["rs", "py", "js", "ts", "tsx", "go", "java", "rb", "php", "cs", "c", "cpp", "swift", "kt", "dart", "ex"];
+    let mut sampled_code: Vec<(String, String)> = Vec::new();
+    let mut sampled_per_ext: HashMap<String, usize> = HashMap::new();
+
+    for (rel_path, ext) in &all_files {
+        if !code_extensions.contains(&ext.as_str()) { continue; }
+        let count = sampled_per_ext.entry(ext.clone()).or_default();
+        if *count >= 3 { continue; }
+
+        let full_path = path.join(rel_path);
+        if let Ok(content) = read_first_n_lines(&full_path, 100) {
+            if content.len() > 50 { // Skip near-empty files
+                sampled_code.push((rel_path.clone(), content));
+                *count += 1;
+            }
+        }
+    }
+
+    // Sort tree
+    tree_lines.sort();
+    let directory_tree = tree_lines.iter()
+        .take(30)
+        .map(|d| format!("  {}/", d))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     ProjectProfile {
         root: path.to_path_buf(),
-        languages: lang_vec.iter().map(|(l, _)| l.clone()).collect(),
-        frameworks: frameworks.into_iter().collect(),
-        key_files,
+        files_by_extension: files_by_ext,
+        config_files,
+        sampled_code,
         total_files,
-        file_samples,
+        directory_tree,
     }
 }
 
-fn walk_dir(dir: &Path, ignore: &[&str], callback: &mut dyn FnMut(&Path)) {
+/// Detect existing .claude/ artifacts.
+pub fn detect_existing(path: &Path) -> ExistingArtifacts {
+    let claude_dir = path.join(".claude");
+
+    let agents = fs::read_dir(claude_dir.join("agents"))
+        .ok()
+        .map(|entries| {
+            entries.flatten()
+                .filter(|e| e.path().extension().map(|x| x == "md").unwrap_or(false))
+                .filter_map(|e| e.path().file_stem().map(|n| n.to_string_lossy().to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let skills = fs::read_dir(claude_dir.join("skills"))
+        .ok()
+        .map(|entries| {
+            entries.flatten()
+                .filter(|e| e.path().is_dir())
+                .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let has_claude_md = path.join("CLAUDE.md").exists();
+
+    ExistingArtifacts { agents, skills, has_claude_md }
+}
+
+/// Format the profile into prompt-ready strings.
+impl ProjectProfile {
+    pub fn ext_summary(&self) -> String {
+        let mut exts: Vec<(&String, usize)> = self.files_by_extension.iter()
+            .map(|(ext, files)| (ext, files.len()))
+            .collect();
+        exts.sort_by(|a, b| b.1.cmp(&a.1));
+        exts.iter()
+            .take(15)
+            .map(|(ext, count)| format!("  .{}: {} files", ext, count))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn config_summary(&self) -> String {
+        self.config_files.iter()
+            .map(|(path, content)| {
+                let truncated = if content.len() > 500 {
+                    format!("{}...", &content[..500])
+                } else {
+                    content.clone()
+                };
+                format!("--- {} ---\n{}", path, truncated)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    pub fn code_summary(&self) -> String {
+        self.sampled_code.iter()
+            .take(5) // Max 5 samples in the prompt
+            .map(|(path, content)| {
+                let truncated = if content.len() > 800 {
+                    format!("{}...", &content[..800])
+                } else {
+                    content.clone()
+                };
+                format!("--- {} ---\n{}", path, truncated)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+}
+
+// ── AI pipeline ─────────────────────────────────────────────────────────────
+
+/// Send a prompt to the AI via the proxy and get a response.
+pub async fn call_ai(prompt: &str, proxy_port: u16) -> Result<String, String> {
+    let body = serde_json::json!({
+        "model": "deepseek-chat",
+        "max_tokens": 8192,
+        "messages": [{"role": "user", "content": prompt}]
+    });
+
+    let url = format!("http://localhost:{}/v1/messages", proxy_port);
+
+    let output = tokio::process::Command::new("curl")
+        .args([
+            "-sf",
+            "-X", "POST",
+            &url,
+            "-H", "Content-Type: application/json",
+            "-H", "anthropic-version: 2023-06-01",
+            "-H", "x-api-key: scan-via-proxy",
+            "-d", &body.to_string(),
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to call AI: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("AI call failed: {}", stderr));
+    }
+
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse AI response: {}", e))?;
+
+    // Extract text from Anthropic Messages API response
+    response.get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|block| block.get("text"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "No text in AI response".to_string())
+}
+
+/// Extract JSON from AI response (handles markdown code blocks).
+pub fn extract_json(response: &str) -> Result<serde_json::Value, String> {
+    // Try direct parse first
+    if let Ok(v) = serde_json::from_str(response) {
+        return Ok(v);
+    }
+
+    // Try extracting from ```json ... ``` blocks
+    if let Some(start) = response.find("```json") {
+        let after = &response[start + 7..];
+        if let Some(end) = after.find("```") {
+            let json_str = after[..end].trim();
+            if let Ok(v) = serde_json::from_str(json_str) {
+                return Ok(v);
+            }
+        }
+    }
+
+    // Try extracting from ``` ... ``` blocks
+    if let Some(start) = response.find("```") {
+        let after = &response[start + 3..];
+        if let Some(end) = after.find("```") {
+            let json_str = after[..end].trim();
+            if let Ok(v) = serde_json::from_str(json_str) {
+                return Ok(v);
+            }
+        }
+    }
+
+    // Try finding first { ... } or [ ... ]
+    if let Some(start) = response.find('{') {
+        if let Some(end) = response.rfind('}') {
+            let json_str = &response[start..=end];
+            if let Ok(v) = serde_json::from_str(json_str) {
+                return Ok(v);
+            }
+        }
+    }
+
+    Err(format!("Could not extract JSON from response: {}", &response[..response.len().min(200)]))
+}
+
+/// Run the full AI-powered scan pipeline.
+pub async fn run_pipeline(
+    profile: &ProjectProfile,
+    existing: &ExistingArtifacts,
+    proxy_port: u16,
+) -> Result<ScanResult, String> {
+    // Step 1: Analysis
+    eprintln!("  [2/6] Analyzing project (via DeepSeek)...");
+    let analysis_prompt = prompts::analysis_prompt(
+        profile.total_files,
+        &profile.ext_summary(),
+        &profile.config_summary(),
+        &profile.code_summary(),
+    );
+    let analysis_response = call_ai(&analysis_prompt, proxy_port).await?;
+    let analysis = extract_json(&analysis_response)?;
+
+    let langs = analysis["languages"].as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+        .unwrap_or_default();
+    let ptype = analysis["project_type"].as_str().unwrap_or("unknown");
+    let complexity = analysis["complexity"].as_str().unwrap_or("unknown");
+    eprintln!("        Detected: {}", langs);
+    eprintln!("        Type: {} ({})", ptype, complexity);
+
+    // Step 2: Planning
+    eprintln!("  [3/6] Planning agents and skills...");
+    let existing_list = if existing.agents.is_empty() {
+        "None".to_string()
+    } else {
+        existing.agents.join(", ")
+    };
+    let planning_prompt = prompts::planning_prompt(&analysis.to_string(), &existing_list);
+    let planning_response = call_ai(&planning_prompt, proxy_port).await?;
+    let plan = extract_json(&planning_response)?;
+
+    let planned_agents = plan["agents"].as_array().map(|a| a.len()).unwrap_or(0);
+    let planned_skills = plan["skills"].as_array().map(|a| a.len()).unwrap_or(0);
+    eprintln!("        Will generate: {} agents, {} skills", planned_agents, planned_skills);
+
+    // Step 3-5: Per-domain agent generation
+    eprintln!("  [4/6] Generating domain-specific content...");
+    let mut agent_outputs: Vec<String> = Vec::new();
+
+    if let Some(agents) = plan["agents"].as_array() {
+        for agent in agents {
+            let name = agent["name"].as_str().unwrap_or("unknown");
+
+            // Skip if already exists
+            if existing.agents.iter().any(|a| a == name) {
+                eprintln!("        Skipping {} (already exists)", name);
+                continue;
+            }
+
+            let domain = agent["domain"].as_str().unwrap_or("general");
+            eprint!("        ├─ {} ({})...", name, domain);
+
+            let gen_prompt = prompts::agent_generation_prompt(
+                &agent.to_string(),
+                &analysis.to_string(),
+                &profile.code_summary(),
+            );
+
+            match call_ai(&gen_prompt, proxy_port).await {
+                Ok(output) => {
+                    agent_outputs.push(format!("AGENT:{}\n{}", name, output));
+                    eprintln!(" ✓");
+                }
+                Err(e) => {
+                    eprintln!(" ✗ ({})", e);
+                }
+            }
+        }
+    }
+
+    // Step 6: Synthesis
+    eprintln!("  [5/6] Synthesizing...");
+    let all_outputs = agent_outputs.join("\n\n---\n\n");
+    let skills_json = plan.get("skills").map(|s| s.to_string()).unwrap_or("[]".to_string());
+    let combined = format!("Agent Outputs:\n{}\n\nPlanned Skills:\n{}", all_outputs, skills_json);
+
+    let synthesis_prompt = prompts::synthesis_prompt(&combined, &analysis.to_string());
+    let synthesis_response = call_ai(&synthesis_prompt, proxy_port).await?;
+    let synthesis = extract_json(&synthesis_response)?;
+
+    let total_agents = synthesis["agents"].as_array().map(|a| a.len()).unwrap_or(0);
+    let total_skills = synthesis["skills"].as_array().map(|a| a.len()).unwrap_or(0);
+    eprintln!("        Merged → {} agents, {} skills", total_agents, total_skills);
+
+    Ok(ScanResult {
+        analysis,
+        plan,
+        synthesis,
+        existing_skipped: existing.agents.clone(),
+    })
+}
+
+pub struct ScanResult {
+    pub analysis: serde_json::Value,
+    pub plan: serde_json::Value,
+    pub synthesis: serde_json::Value,
+    pub existing_skipped: Vec<String>,
+}
+
+// ── File writing ────────────────────────────────────────────────────────────
+
+/// Write all generated artifacts to disk.
+pub fn write_artifacts(root: &Path, result: &ScanResult, force: bool) -> WriteSummary {
+    let mut summary = WriteSummary::default();
+    let claude_dir = root.join(".claude");
+
+    // Write agents
+    if let Some(agents) = result.synthesis["agents"].as_array() {
+        let agents_dir = claude_dir.join("agents");
+        fs::create_dir_all(&agents_dir).ok();
+
+        for agent in agents {
+            let name = agent["name"].as_str().unwrap_or("unknown");
+            let content = agent["content"].as_str().unwrap_or("");
+            if content.is_empty() { continue; }
+
+            let path = agents_dir.join(format!("{}.md", name));
+            if path.exists() && !force {
+                eprintln!("        Skipping: {} (exists)", name);
+                summary.agents_skipped += 1;
+                continue;
+            }
+
+            if fs::write(&path, content).is_ok() {
+                eprintln!("        Created: {}", name);
+                summary.agents_created += 1;
+            }
+        }
+    }
+
+    // Write skills
+    if let Some(skills) = result.synthesis["skills"].as_array() {
+        let skills_dir = claude_dir.join("skills");
+
+        for skill in skills {
+            let name = skill["name"].as_str().unwrap_or("unknown");
+            let content = skill["content"].as_str().unwrap_or("");
+            if content.is_empty() { continue; }
+
+            let skill_dir = skills_dir.join(name);
+            let path = skill_dir.join("SKILL.md");
+            if path.exists() && !force {
+                summary.skills_skipped += 1;
+                continue;
+            }
+
+            fs::create_dir_all(&skill_dir).ok();
+            if fs::write(&path, content).is_ok() {
+                summary.skills_created += 1;
+            }
+        }
+    }
+
+    // Write CLAUDE.md
+    if let Some(claude_md) = result.synthesis["claude_md"].as_str() {
+        if !claude_md.is_empty() {
+            let path = root.join("CLAUDE.md");
+            if path.exists() && !force {
+                eprintln!("        Skipping: CLAUDE.md (exists)");
+                summary.claude_md_skipped = true;
+            } else {
+                if fs::write(&path, claude_md).is_ok() {
+                    eprintln!("        Created: CLAUDE.md");
+                    summary.claude_md_created = true;
+                }
+            }
+        }
+    }
+
+    summary
+}
+
+#[derive(Default)]
+pub struct WriteSummary {
+    pub agents_created: usize,
+    pub agents_skipped: usize,
+    pub skills_created: usize,
+    pub skills_skipped: usize,
+    pub claude_md_created: bool,
+    pub claude_md_skipped: bool,
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+fn walk_dir(
+    dir: &Path,
+    root: &Path,
+    ignore: &[&str],
+    callback: &mut dyn FnMut(&Path, &Path),
+) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -118,282 +485,24 @@ fn walk_dir(dir: &Path, ignore: &[&str], callback: &mut dyn FnMut(&Path)) {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
 
-        if ignore.iter().any(|i| *i == name) {
-            continue;
-        }
+        if ignore.iter().any(|i| *i == name) { continue; }
+        if name.starts_with('.') && name != ".env.example" { continue; }
 
         if path.is_dir() {
-            walk_dir(&path, ignore, callback);
+            walk_dir(&path, root, ignore, callback);
         } else if path.is_file() {
-            callback(&path);
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            callback(&path, rel);
         }
     }
 }
 
-/// Generate agent and skill files based on the project profile.
-pub fn generate_agents(profile: &ProjectProfile) -> Vec<(PathBuf, String)> {
-    let mut files: Vec<(PathBuf, String)> = Vec::new();
-    let claude_dir = profile.root.join(".claude").join("agents");
-
-    // Always generate a code-reviewer agent
-    files.push((
-        claude_dir.join("code-reviewer.md"),
-        generate_reviewer_agent(profile),
-    ));
-
-    // Always generate a debugger agent
-    files.push((
-        claude_dir.join("debugger.md"),
-        generate_debugger_agent(profile),
-    ));
-
-    // Language-specific agents
-    for lang in &profile.languages {
-        match lang.as_str() {
-            "Rust" => {
-                files.push((claude_dir.join("rust-expert.md"), generate_rust_agent(profile)));
-            }
-            "TypeScript" | "JavaScript" => {
-                files.push((claude_dir.join("frontend-engineer.md"), generate_frontend_agent(profile)));
-            }
-            "Python" => {
-                files.push((claude_dir.join("python-expert.md"), generate_python_agent(profile)));
-            }
-            "Go" => {
-                files.push((claude_dir.join("go-expert.md"), generate_go_agent(profile)));
-            }
-            _ => {}
-        }
-    }
-
-    // Testing agent if test frameworks detected
-    if profile.frameworks.iter().any(|f| f.contains("Jest") || f.contains("Vitest") || f.contains("pytest")) {
-        files.push((claude_dir.join("test-runner.md"), generate_test_agent(profile)));
-    }
-
-    // Explorer agent (always, uses Haiku for cost savings)
-    files.push((
-        claude_dir.join("explorer.md"),
-        generate_explorer_agent(profile),
-    ));
-
-    files
-}
-
-/// Write generated files to disk.
-pub fn write_agents(files: &[(PathBuf, String)]) -> usize {
-    let mut written = 0;
-    for (path, content) in files {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).ok();
-        }
-        if let Ok(mut f) = fs::File::create(path) {
-            if f.write_all(content.as_bytes()).is_ok() {
-                written += 1;
-            }
-        }
-    }
-    written
-}
-
-// ── Agent generators ────────────────────────────────────────────────────────
-
-fn generate_reviewer_agent(profile: &ProjectProfile) -> String {
-    let langs = profile.languages.join(", ");
-    format!(r#"---
-name: code-reviewer
-description: Expert code reviewer for this {langs} project. Use proactively after code changes.
-tools: Read, Grep, Glob, Bash
-model: haiku
----
-
-You are a senior code reviewer for a project using {langs}.
-
-Key files in this project:
-{key_files}
-
-When invoked:
-1. Run git diff to see recent changes
-2. Focus on modified files
-3. Review immediately
-
-Check for:
-- Code clarity and readability
-- Proper error handling
-- No exposed secrets
-- Performance issues
-- Test coverage gaps
-
-Provide feedback by priority: Critical > Warnings > Suggestions.
-Include specific fix examples.
-"#,
-        langs = langs,
-        key_files = profile.key_files.iter().take(10).map(|f| format!("- {}", f)).collect::<Vec<_>>().join("\n"),
-    )
-}
-
-fn generate_debugger_agent(profile: &ProjectProfile) -> String {
-    let langs = profile.languages.join(", ");
-    format!(r#"---
-name: debugger
-description: Debugging specialist for {langs} errors, test failures, and unexpected behavior. Use proactively when encountering issues.
-tools: Read, Edit, Bash, Grep, Glob
-model: sonnet
----
-
-You are an expert debugger for a {langs} project.
-
-When invoked:
-1. Capture error message and stack trace
-2. Identify reproduction steps
-3. Isolate the failure
-4. Implement minimal fix
-5. Verify solution
-
-Focus on root cause, not symptoms.
-"#,
-        langs = langs,
-    )
-}
-
-fn generate_rust_agent(profile: &ProjectProfile) -> String {
-    let key = profile.key_files.iter()
-        .filter(|f| f.ends_with("Cargo.toml") || f.ends_with(".rs"))
-        .take(5)
-        .map(|f| format!("- {}", f))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    format!(r#"---
-name: rust-expert
-description: Rust systems programming specialist. Use for Rust code, Cargo workspace, unsafe code, async/await, and performance optimization.
-tools: Read, Edit, Write, Bash, Grep, Glob
-model: sonnet
----
-
-You are a Rust expert working on this project.
-
-Key Rust files:
-{key}
-
-Conventions:
-- Follow Rust 2021 edition idioms
-- Use proper error handling (thiserror/anyhow)
-- Run `cargo clippy` before suggesting changes
-- Prefer zero-copy and borrowing over cloning
-- Use `tokio` for async where applicable
-"#,
-        key = key,
-    )
-}
-
-fn generate_frontend_agent(profile: &ProjectProfile) -> String {
-    let frameworks: Vec<&String> = profile.frameworks.iter()
-        .filter(|f| f.contains("Vite") || f.contains("Next") || f.contains("React") || f.contains("Tailwind") || f.contains("TypeScript"))
+fn read_first_n_lines(path: &Path, n: usize) -> Result<String, std::io::Error> {
+    let file = fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let lines: Vec<String> = reader.lines()
+        .take(n)
+        .filter_map(|l| l.ok())
         .collect();
-    let fw_list = if frameworks.is_empty() { "TypeScript/JavaScript".to_string() } else { frameworks.iter().map(|f| f.as_str()).collect::<Vec<_>>().join(", ") };
-
-    format!(r#"---
-name: frontend-engineer
-description: Frontend specialist for {fw}. Use for React components, TypeScript, CSS, and UI work.
-tools: Read, Edit, Write, Bash, Grep, Glob
-model: sonnet
----
-
-You are a frontend engineer working with {fw}.
-
-Follow project conventions:
-- Check existing component patterns before creating new ones
-- Use project's import style (check tsconfig paths)
-- Match existing CSS approach (modules, tailwind, or plain CSS)
-- Write tests matching the project's test framework
-"#,
-        fw = fw_list,
-    )
-}
-
-fn generate_python_agent(profile: &ProjectProfile) -> String {
-    format!(r#"---
-name: python-expert
-description: Python specialist. Use for Python code, data processing, APIs, and scripting.
-tools: Read, Edit, Write, Bash, Grep, Glob
-model: sonnet
----
-
-You are a Python expert.
-
-Follow project conventions:
-- Check for pyproject.toml/setup.py for project config
-- Use type hints consistently
-- Follow existing import style
-- Run linting before suggesting changes (ruff/black/mypy)
-"#)
-}
-
-fn generate_go_agent(_profile: &ProjectProfile) -> String {
-    format!(r#"---
-name: go-expert
-description: Go specialist. Use for Go code, concurrency, and performance.
-tools: Read, Edit, Write, Bash, Grep, Glob
-model: sonnet
----
-
-You are a Go expert.
-
-Follow Go conventions:
-- gofmt formatting
-- Effective Go idioms
-- Proper error handling (no panic in library code)
-- Use go vet and staticcheck
-"#)
-}
-
-fn generate_test_agent(profile: &ProjectProfile) -> String {
-    let test_frameworks: Vec<&String> = profile.frameworks.iter()
-        .filter(|f| f.contains("Jest") || f.contains("Vitest") || f.contains("pytest") || f.contains("cargo"))
-        .collect();
-    let fw = if test_frameworks.is_empty() { "the project's test framework".to_string() } else { test_frameworks.iter().map(|f| f.as_str()).collect::<Vec<_>>().join(", ") };
-
-    format!(r#"---
-name: test-runner
-description: Testing specialist. Runs tests, diagnoses failures, and improves coverage. Use proactively after code changes.
-tools: Read, Edit, Write, Bash, Grep, Glob
-model: haiku
----
-
-You are a testing specialist using {fw}.
-
-When invoked:
-1. Run the test suite
-2. Report failures with context
-3. Suggest fixes for failing tests
-4. Identify untested code paths
-
-Focus on meaningful tests, not coverage numbers.
-"#,
-        fw = fw,
-    )
-}
-
-fn generate_explorer_agent(profile: &ProjectProfile) -> String {
-    format!(r#"---
-name: explorer
-description: Fast codebase exploration agent. Use for finding files, searching code, understanding project structure. Runs on Haiku for speed and cost efficiency.
-tools: Read, Grep, Glob, Bash
-model: haiku
----
-
-You are a fast codebase explorer. Your job is to find information quickly.
-
-This project has {total} files across {langs}.
-
-Key files:
-{key_files}
-
-Be concise. Return findings immediately. Don't over-explain.
-"#,
-        total = profile.total_files,
-        langs = profile.languages.join(", "),
-        key_files = profile.key_files.iter().take(10).map(|f| format!("- {}", f)).collect::<Vec<_>>().join("\n"),
-    )
+    Ok(lines.join("\n"))
 }
