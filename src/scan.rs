@@ -236,14 +236,39 @@ pub async fn call_ai(prompt: &str, proxy_port: u16) -> Result<String, String> {
     let response: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("Failed to parse AI response: {}", e))?;
 
-    // Extract text from Anthropic Messages API response
-    response.get("content")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|block| block.get("text"))
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "No text in AI response".to_string())
+    // Extract text from response — handle both Anthropic and DeepSeek formats
+    // Anthropic: {"content": [{"type": "text", "text": "..."}]}
+    // DeepSeek might return differently through proxy
+    let text = response.get("content")
+        .and_then(|c| {
+            // Array format (Anthropic standard)
+            if let Some(arr) = c.as_array() {
+                arr.first()
+                    .and_then(|block| block.get("text").and_then(|t| t.as_str()))
+                    .map(|s| s.to_string())
+            }
+            // String format (some providers)
+            else if let Some(s) = c.as_str() {
+                Some(s.to_string())
+            }
+            else { None }
+        })
+        // Also check choices[0].message.content (OpenAI format)
+        .or_else(|| {
+            response.get("choices")
+                .and_then(|c| c.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|choice| choice.get("message"))
+                .and_then(|msg| msg.get("content"))
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string())
+        });
+
+    match text {
+        Some(t) if !t.is_empty() => Ok(t),
+        _ => Err(format!("No text in AI response. Raw response: {}",
+            &response.to_string().chars().take(500).collect::<String>())),
+    }
 }
 
 /// Extract JSON from AI response (handles markdown code blocks).
