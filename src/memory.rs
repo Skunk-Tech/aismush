@@ -1,128 +1,164 @@
-//! Persistent cross-session memory.
+//! Persistent cross-session memory (claude-mem inspired).
 //!
-//! Extracts key facts from responses, stores in SQLite,
-//! injects relevant memories into new sessions.
+//! Instead of pattern-matching response text (which doesn't work),
+//! we capture tool_use/tool_result pairs from the request traffic.
+//! Every file read, edit, command run, etc. is an observation.
+//! On new sessions, recent observations are injected as context.
 
 use crate::db::Db;
 use rusqlite::params;
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
-/// Extract memorable facts from an assistant response and store them.
-pub async fn extract_and_store(db: &Db, project_path: &str, response_text: &str) {
-    let facts = extract_facts(response_text);
-    if facts.is_empty() {
+/// Extract observations from the request body's messages.
+/// Looks for tool_use blocks (what the AI did) and captures them.
+pub async fn extract_from_request(db: &Db, project_path: &str, body: &Value) {
+    let Some(messages) = body.get("messages").and_then(|m| m.as_array()) else {
+        return;
+    };
+
+    // Only look at the last few messages for new observations
+    // (older ones were already captured in previous requests)
+    let recent = if messages.len() > 4 { &messages[messages.len()-4..] } else { messages.as_slice() };
+
+    let mut observations: Vec<(String, String)> = Vec::new();
+
+    for msg in recent {
+        let Some(content) = msg.get("content").and_then(|c| c.as_array()) else { continue };
+
+        for block in content {
+            // Capture tool_use blocks (what the AI decided to do)
+            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                let tool_name = block.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                let input = block.get("input");
+
+                let observation = match tool_name {
+                    "Read" | "read" => {
+                        let path = input.and_then(|i| i.get("file_path")).and_then(|p| p.as_str()).unwrap_or("?");
+                        format!("Read file: {}", path)
+                    }
+                    "Edit" | "edit" => {
+                        let path = input.and_then(|i| i.get("file_path")).and_then(|p| p.as_str()).unwrap_or("?");
+                        format!("Edited file: {}", path)
+                    }
+                    "Write" | "write" => {
+                        let path = input.and_then(|i| i.get("file_path")).and_then(|p| p.as_str()).unwrap_or("?");
+                        format!("Created file: {}", path)
+                    }
+                    "Bash" | "bash" => {
+                        let cmd = input.and_then(|i| i.get("command")).and_then(|c| c.as_str()).unwrap_or("?");
+                        // Truncate long commands
+                        let short = if cmd.len() > 100 { &cmd[..100] } else { cmd };
+                        format!("Ran: {}", short)
+                    }
+                    "Grep" | "grep" => {
+                        let pattern = input.and_then(|i| i.get("pattern")).and_then(|p| p.as_str()).unwrap_or("?");
+                        format!("Searched for: {}", pattern)
+                    }
+                    "Glob" | "glob" => {
+                        let pattern = input.and_then(|i| i.get("pattern")).and_then(|p| p.as_str()).unwrap_or("?");
+                        format!("Found files: {}", pattern)
+                    }
+                    _ => {
+                        // Generic tool capture
+                        format!("Used tool: {}", tool_name)
+                    }
+                };
+
+                let category = match tool_name {
+                    "Read" | "read" | "Grep" | "grep" | "Glob" | "glob" => "exploration",
+                    "Edit" | "edit" | "Write" | "write" => "modification",
+                    "Bash" | "bash" => "command",
+                    _ => "tool",
+                };
+
+                observations.push((observation, category.to_string()));
+            }
+
+            // Capture key text from assistant messages (decisions, not fluff)
+            if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+                if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                        // Only capture short, decision-like statements
+                        for line in text.lines() {
+                            let t = line.trim();
+                            if t.len() > 30 && t.len() < 200 {
+                                // Look for decision/action indicators
+                                if t.contains("created") || t.contains("installed") ||
+                                   t.contains("configured") || t.contains("fixed") ||
+                                   t.contains("changed") || t.contains("updated") ||
+                                   t.contains("added") || t.contains("removed") ||
+                                   t.contains("migrated") || t.contains("refactored") {
+                                    observations.push((t.to_string(), "decision".to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if observations.is_empty() {
         return;
     }
 
+    // Deduplicate
+    observations.sort_by(|a, b| a.0.cmp(&b.0));
+    observations.dedup_by(|a, b| a.0 == b.0);
+
+    // Cap per request
+    observations.truncate(20);
+
+    let count = observations.len();
     let db = db.clone();
     let project = project_path.to_string();
-    let facts_clone = facts.clone();
 
     tokio::task::spawn_blocking(move || {
         let conn = db.blocking_lock();
-        for (content, category) in &facts_clone {
+        for (content, category) in &observations {
             match conn.execute(
                 "INSERT OR IGNORE INTO memories (project_path, content, category) VALUES (?1, ?2, ?3)",
                 params![project, content, category],
             ) {
-                Ok(1) => debug!(category, content = &content[..content.len().min(60)], "Memory stored"),
-                Ok(_) => {} // duplicate, ignored
+                Ok(1) => debug!(content = &content[..content.len().min(60)], "Memory stored"),
+                Ok(_) => {} // duplicate
                 Err(e) => warn!(error = %e, "Failed to store memory"),
             }
         }
     }).await.ok();
 
-    info!(count = facts.len(), project = project_path, "Extracted memories");
-}
-
-/// Extract facts from response text using pattern matching.
-fn extract_facts(text: &str) -> Vec<(String, String)> {
-    let mut facts: Vec<(String, String)> = Vec::new();
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.len() < 20 || trimmed.len() > 500 {
-            continue;
-        }
-
-        // Architecture decisions
-        if let Some(fact) = match_pattern(trimmed, &[
-            "I'll use ", "Let's use ", "We should use ", "We'll use ",
-            "Using ", "Switching to ", "Migrating to ",
-            "The architecture ", "The approach ",
-        ]) {
-            facts.push((fact, "architecture".into()));
-            continue;
-        }
-
-        // Debugging facts
-        if let Some(fact) = match_pattern(trimmed, &[
-            "The issue was ", "The problem is ", "The bug was ",
-            "Fixed by ", "The fix is ", "Root cause: ",
-            "The error occurs because ", "This fails because ",
-        ]) {
-            facts.push((fact, "debugging".into()));
-            continue;
-        }
-
-        // Project changes
-        if let Some(fact) = match_pattern(trimmed, &[
-            "Created file ", "Created ", "Added ",
-            "Installed ", "Configured ", "Set up ",
-            "Removed ", "Deleted ", "Renamed ",
-        ]) {
-            // Only if it looks like a file/project action (contains a path-like string)
-            if fact.contains('/') || fact.contains('.') || fact.contains("module") || fact.contains("component") {
-                facts.push((fact, "change".into()));
-                continue;
-            }
-        }
-
-        // Key decisions
-        if let Some(fact) = match_pattern(trimmed, &[
-            "Decision: ", "Decided to ", "The plan is to ",
-            "Strategy: ", "We agreed to ",
-        ]) {
-            facts.push((fact, "decision".into()));
-        }
+    if count > 0 {
+        debug!(count, project = project_path, "Captured observations");
     }
-
-    // Deduplicate
-    facts.sort_by(|a, b| a.0.cmp(&b.0));
-    facts.dedup_by(|a, b| a.0 == b.0);
-
-    // Cap at 10 per response to avoid noise
-    facts.truncate(10);
-    facts
 }
 
-fn match_pattern(text: &str, patterns: &[&str]) -> Option<String> {
-    for pattern in patterns {
-        if text.contains(pattern) {
-            return Some(text.to_string());
-        }
-    }
-    None
-}
-
-/// Get relevant memories for a project and inject into system prompt.
+/// Inject relevant memories into the system prompt for a new session.
 pub async fn inject_memories(db: &Db, body: &mut Value, project_path: &str) {
     let memories = get_relevant_memories(db, project_path).await;
     if memories.is_empty() {
         return;
     }
 
-    // Build memory block
-    let mut memory_text = String::from("[Project Memory — key facts from previous sessions:]\n");
+    // Build memory block — grouped by category
+    let mut memory_text = String::from("[Project Memory — context from previous sessions:]\n");
+
+    let mut by_category: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     for (content, category) in &memories {
-        memory_text.push_str(&format!("- [{}] {}\n", category, content));
+        by_category.entry(category.as_str()).or_default().push(content.as_str());
     }
 
-    // Cap at ~4000 chars (~1000 tokens)
-    if memory_text.len() > 4000 {
-        memory_text.truncate(4000);
-        memory_text.push_str("\n[...more memories truncated]");
+    for (category, items) in &by_category {
+        memory_text.push_str(&format!("\n{}:\n", category));
+        for item in items.iter().take(10) { // Max 10 per category
+            memory_text.push_str(&format!("  - {}\n", item));
+        }
+    }
+
+    // Cap at ~3000 chars (~750 tokens)
+    if memory_text.len() > 3000 {
+        memory_text.truncate(3000);
+        memory_text.push_str("\n[...more memories available]");
     }
 
     // Inject into system prompt
@@ -140,7 +176,7 @@ pub async fn inject_memories(db: &Db, body: &mut Value, project_path: &str) {
     info!(count = memories.len(), project = project_path, "Injected memories");
 }
 
-/// Query top memories by relevance × recency.
+/// Query top memories by relevance and recency.
 async fn get_relevant_memories(db: &Db, project_path: &str) -> Vec<(String, String)> {
     let db = db.clone();
     let project = project_path.to_string();
@@ -148,12 +184,11 @@ async fn get_relevant_memories(db: &Db, project_path: &str) -> Vec<(String, Stri
     tokio::task::spawn_blocking(move || {
         let conn = db.blocking_lock();
 
-        // Relevance score × recency weight (decays over 7 days)
         let mut stmt = conn.prepare(
             "SELECT content, category FROM memories
              WHERE project_path = ?1
              ORDER BY relevance_score * (1.0 / (1.0 + (strftime('%s','now') - last_accessed) / 604800.0)) DESC
-             LIMIT 20"
+             LIMIT 30"
         ).ok()?;
 
         let rows = stmt.query_map(params![project], |row| {
@@ -171,7 +206,7 @@ async fn get_relevant_memories(db: &Db, project_path: &str) -> Vec<(String, Stri
     }).await.ok().flatten().unwrap_or_default()
 }
 
-/// Decay memory relevance scores (call on startup).
+/// Decay relevance scores on startup.
 pub async fn decay_scores(db: &Db) {
     let db = db.clone();
     tokio::task::spawn_blocking(move || {
@@ -181,9 +216,8 @@ pub async fn decay_scores(db: &Db) {
     }).await.ok();
 }
 
-/// Detect project path from system prompt or working directory hints.
+/// Detect project path from system prompt.
 pub fn detect_project(body: &Value) -> String {
-    // Look for working directory in system prompt
     if let Some(system) = body.get("system") {
         let text = if let Some(s) = system.as_str() {
             s.to_string()
@@ -196,7 +230,6 @@ pub fn detect_project(body: &Value) -> String {
             String::new()
         };
 
-        // Look for common patterns
         for line in text.lines() {
             if line.contains("working directory:") || line.contains("Primary working directory:") {
                 if let Some(path) = line.split(':').nth(1) {

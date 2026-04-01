@@ -303,6 +303,16 @@ async fn handle(
         .to_string();
     let project_path = parsed.as_ref().map(|b| memory::detect_project(b)).unwrap_or_else(|| "default".to_string());
 
+    // ── Extract observations from tool_use blocks (non-blocking) ────────
+    if let (Some(ref db), Some(ref body_val)) = (&state.db, &parsed) {
+        let db = db.clone();
+        let project = project_path.clone();
+        let body_clone = body_val.clone();
+        tokio::spawn(async move {
+            memory::extract_from_request(&db, &project, &body_clone).await;
+        });
+    }
+
     // ── Route decision (before any body modification) ──────────────────
     let route_preview = router::decide(&parsed, &state.config.force_provider);
 

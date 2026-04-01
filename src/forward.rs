@@ -10,7 +10,6 @@ use tracing::{debug, error, warn};
 
 use crate::cost;
 use crate::db;
-use crate::memory;
 use crate::state::ProxyState;
 use crate::tokens;
 
@@ -171,7 +170,7 @@ pub async fn claude(
                     ).await;
 
                     // Extract memories from response
-                    memory::extract_and_store(db, &project, &stream_data).await;
+                    // Memory extraction now happens in main.rs from request body
                 }
 
                 debug!(
@@ -302,7 +301,7 @@ pub async fn deepseek(
                         comp_original, comp_final,
                     ).await;
 
-                    memory::extract_and_store(db, &project, &stream_data).await;
+                    // Memory extraction now happens in main.rs from request body
                 }
 
                 debug!(
