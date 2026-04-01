@@ -102,7 +102,7 @@ async fn main() {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    // Check for updates (non-blocking)
+    // Check for updates on startup (visible to user before log redirect)
     tokio::spawn(async {
         check_for_updates().await;
     });
@@ -167,8 +167,30 @@ async fn main() {
     info!(port = cfg.port, "Listening");
     info!("Dashboard: http://127.0.0.1:{}/dashboard", cfg.port);
 
-    // Graceful shutdown
-    let shutdown = tokio::signal::ctrl_c();
+    // Periodic stats reporting (every 10 minutes)
+    let stats_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+            report_stats(&stats_state).await;
+        }
+    });
+
+    // Handle both SIGINT (Ctrl+C) and SIGTERM (kill)
+    let shutdown = async {
+        let ctrl_c = tokio::signal::ctrl_c();
+        #[cfg(unix)]
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = ctrl_c => {},
+                _ = sigterm.recv() => {},
+            }
+        }
+        #[cfg(not(unix))]
+        ctrl_c.await.ok();
+    };
     tokio::pin!(shutdown);
 
     loop {
@@ -194,7 +216,6 @@ async fn main() {
             }
             _ = &mut shutdown => {
                 info!("Shutting down...");
-                // Report stats to global dashboard
                 report_stats(&state).await;
                 break;
             }
@@ -391,7 +412,16 @@ async fn check_for_updates() {
                 if let Some(tag) = json["tag_name"].as_str() {
                     let latest = tag.trim_start_matches('v');
                     if latest != VERSION && !latest.is_empty() {
-                        info!("Update available: v{} -> v{} (run: aismush --upgrade)", VERSION, latest);
+                        eprintln!("  [AISmush] Update available: v{} → v{} (run: aismush --upgrade)", VERSION, latest);
+                        info!("Update available: v{} -> v{}", VERSION, latest);
+
+                        // Write flag file so start script can show a banner
+                        let flag_path = config::ProxyConfig::load().data_dir.join("update-available");
+                        let _ = std::fs::write(&flag_path, format!("{}\n", latest));
+                    } else {
+                        // No update — remove flag if it exists
+                        let flag_path = config::ProxyConfig::load().data_dir.join("update-available");
+                        let _ = std::fs::remove_file(&flag_path);
                     }
                 }
             }

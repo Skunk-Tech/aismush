@@ -37,9 +37,20 @@ if [ "$1" = "--proxy-only" ]; then
     exec "$BINARY"
 fi
 
+# Check for update notification from previous run
+UPDATE_FILE="$LOGDIR/update-available"
+if [ -f "$UPDATE_FILE" ]; then
+    NEW_VER=$(cat "$UPDATE_FILE" 2>/dev/null)
+    echo "  ┌─────────────────────────────────────────────────┐"
+    echo "  │  UPDATE AVAILABLE: v$NEW_VER                     "
+    echo "  │  Run: aismush --upgrade                          "
+    echo "  └─────────────────────────────────────────────────┘"
+    echo ""
+fi
+
 "$BINARY" > "$LOGFILE" 2>&1 &
 PROXY_PID=$!
-sleep 0.3
+sleep 0.5
 
 if ! kill -0 $PROXY_PID 2>/dev/null; then
     echo "  Failed! Check $LOGFILE"
