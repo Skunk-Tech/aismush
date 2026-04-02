@@ -769,10 +769,17 @@ async fn upgrade() {
     println!("AISmush v{} — checking for updates...", VERSION);
     println!();
 
-    // Use the install script which handles platform detection and download
+    #[cfg(unix)]
     let status = tokio::process::Command::new("bash")
         .arg("-c")
         .arg("curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh | bash")
+        .status()
+        .await;
+
+    #[cfg(windows)]
+    let status = tokio::process::Command::new("powershell")
+        .args(["-ExecutionPolicy", "Bypass", "-Command",
+            "irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 | iex"])
         .status()
         .await;
 
@@ -783,11 +790,17 @@ async fn upgrade() {
         }
         Ok(s) => {
             eprintln!("Upgrade failed (exit code {:?})", s.code());
+            #[cfg(unix)]
             eprintln!("Try manually: curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh | bash");
+            #[cfg(windows)]
+            eprintln!("Try manually: irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 | iex");
         }
         Err(e) => {
             eprintln!("Upgrade failed: {}", e);
+            #[cfg(unix)]
             eprintln!("Try manually: curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh | bash");
+            #[cfg(windows)]
+            eprintln!("Try manually: irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 | iex");
         }
     }
 }

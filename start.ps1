@@ -1,7 +1,14 @@
 # AISmush - Hybrid Claude + DeepSeek Proxy (Windows)
 $ErrorActionPreference = "Stop"
 
-$BINARY = ".\aismush.exe"
+# Find binary: installed location first, then local directory
+$BINARY = if (Get-Command "aismush.exe" -ErrorAction SilentlyContinue) {
+    (Get-Command "aismush.exe").Source
+} elseif (Test-Path "$env:LOCALAPPDATA\AISmush\aismush.exe") {
+    "$env:LOCALAPPDATA\AISmush\aismush.exe"
+} else {
+    ".\aismush.exe"
+}
 $LOGDIR = "$env:USERPROFILE\.hybrid-proxy"
 $LOGFILE = "$LOGDIR\proxy.log"
 $PORT = if ($env:PROXY_PORT) { $env:PROXY_PORT } else { "1849" }
