@@ -58,7 +58,7 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
         color:var(--dim); cursor:pointer; font-size:11px; font-family:var(--font); }}
 .btn:hover {{ border-color:var(--blue); color:var(--blue); }}
 .btn.danger:hover {{ border-color:var(--red); color:var(--red); }}
-#page-history, #page-memories {{ display:none; }}
+#page-history, #page-search, #page-memories {{ display:none; }}
 .footer {{ margin-top:24px; color:var(--dim); font-size:11px; text-align:center; }}
 </style>
 </head>
@@ -70,6 +70,7 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
 <div class="tabs">
   <div class="tab active" onclick="showPage('overview',this)">Overview</div>
   <div class="tab" onclick="showPage('history',this)">History</div>
+  <div class="tab" onclick="showPage('search',this)">Search</div>
   <div class="tab" onclick="showPage('memories',this)">Memories</div>
 </div>
 
@@ -116,6 +117,18 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
 </div>
 
 <!-- History Page -->
+<!-- Search Page -->
+<div id="page-search">
+  <div class="section">
+    <h2>Search Past Conversations</h2>
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <input type="text" id="search-query" placeholder="Search by meaning... e.g. 'auth bug fix'" style="flex:1;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font);font-size:13px" onkeydown="if(event.key==='Enter')runSearch()">
+      <button class="btn" onclick="runSearch()" style="padding:8px 16px">Search</button>
+    </div>
+    <div id="search-results"><p style="color:var(--dim);font-size:12px">Enter a query to search your conversation history.</p></div>
+  </div>
+</div>
+
 <div id="page-history">
   <div class="section">
     <h2>Request History</h2>
@@ -156,6 +169,35 @@ function showPage(page, el) {{
   currentPage = page;
   if (page === 'history') loadHistory();
   if (page === 'memories') loadMemories();
+  if (page === 'search') document.getElementById('search-query').focus();
+}}
+
+async function runSearch() {{
+  const query = document.getElementById('search-query').value.trim();
+  if (!query) return;
+  const results = document.getElementById('search-results');
+  results.innerHTML = '<p style="color:var(--dim)">Searching...</p>';
+  try {{
+    const r = await fetch('/search?q=' + encodeURIComponent(query));
+    const data = await r.json();
+    if (!data || data.length === 0) {{
+      results.innerHTML = '<p style="color:var(--dim)">No results found.</p>';
+      return;
+    }}
+    results.innerHTML = data.map(r => `
+      <div style="padding:12px;border-bottom:1px solid #21262d">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+          <span style="color:var(--dim);font-size:11px">${{fmtTime(r.timestamp)}} · ${{r.project_path}} · <span class="tag ${{r.provider}}">${{r.provider}}</span></span>
+          <span style="color:var(--dim);font-size:11px">score: ${{r.similarity_score.toFixed(2)}}</span>
+        </div>
+        <div style="font-size:13px;margin-bottom:4px"><strong>You:</strong> ${{r.user_message}}</div>
+        <div style="font-size:12px;color:var(--dim)"><strong>AI:</strong> ${{r.assistant_snippet}}</div>
+        ${{r.tools_used.length > 0 ? `<div style="font-size:11px;color:var(--dim);margin-top:4px">Tools: ${{r.tools_used.join(', ')}}</div>` : ''}}
+      </div>
+    `).join('');
+  }} catch(e) {{
+    results.innerHTML = '<p style="color:var(--red)">Search failed: ' + e.message + '</p>';
+  }}
 }}
 
 function fmt(n) {{ return '$' + n.toFixed(4); }}

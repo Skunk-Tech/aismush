@@ -274,6 +274,8 @@ pub async fn deepseek(
             let model = model.to_string();
             let reason = route_reason.to_string();
             let project = project_path.to_string();
+            let ds_user_msg = parsed.as_ref().and_then(|b| capture::extract_user_message(b)).unwrap_or_default();
+            let ds_tool_calls = parsed.as_ref().map(|b| capture::extract_tool_calls(b)).unwrap_or_default();
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
 
             tokio::spawn(async move {
@@ -323,6 +325,23 @@ pub async fn deepseek(
                     ).await;
 
                     // Memory extraction now happens in main.rs from request body
+
+                    // Capture full conversation turn
+                    let assistant_msg = capture::assemble_response(&stream_data);
+                    if !ds_user_msg.is_empty() || !assistant_msg.is_empty() {
+                        let conv_id = capture::get_or_create_conversation(db, &project, false).await;
+                        capture::store_turn(db, state2.embedder.as_ref(), conv_id, &capture::TurnData {
+                            user_message: ds_user_msg.clone(),
+                            assistant_message: assistant_msg,
+                            tools: ds_tool_calls.clone(),
+                            provider: "deepseek".to_string(),
+                            model: model.clone(),
+                            route_reason: reason.clone(),
+                            input_tokens, output_tokens,
+                            latency_ms: latency,
+                            cost: costs.actual_cost,
+                        }).await;
+                    }
                 }
 
                 debug!(

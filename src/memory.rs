@@ -133,32 +133,59 @@ pub async fn extract_from_request(db: &Db, project_path: &str, body: &Value) {
     }
 }
 
-/// Inject relevant memories into the system prompt for a new session.
+/// Inject relevant context from past conversations into the system prompt.
+/// Uses deep memory (turns table) first, falls back to old memories table.
 pub async fn inject_memories(db: &Db, body: &mut Value, project_path: &str) {
-    let memories = get_relevant_memories(db, project_path).await;
-    if memories.is_empty() {
+    // Try deep memory first (recent conversation turns)
+    let deep_context = get_recent_turns(db, project_path).await;
+
+    // Fall back to old memories table if no turns
+    let old_memories = if deep_context.is_empty() {
+        get_relevant_memories(db, project_path).await
+    } else {
+        Vec::new()
+    };
+
+    if deep_context.is_empty() && old_memories.is_empty() {
         return;
     }
 
-    // Build memory block — grouped by category
-    let mut memory_text = String::from("[Project Memory — context from previous sessions:]\n");
+    let mut memory_text = String::from("[Context from previous sessions:]\n");
 
-    let mut by_category: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
-    for (content, category) in &memories {
-        by_category.entry(category.as_str()).or_default().push(content.as_str());
-    }
-
-    for (category, items) in &by_category {
-        memory_text.push_str(&format!("\n{}:\n", category));
-        for item in items.iter().take(10) { // Max 10 per category
-            memory_text.push_str(&format!("  - {}\n", item));
+    // Deep memory: recent conversation turns with actual reasoning
+    if !deep_context.is_empty() {
+        memory_text.push_str("\nRecent work:\n");
+        for (user_msg, asst_snippet, tools, age) in &deep_context {
+            memory_text.push_str(&format!("  [{}] You: {}\n", age, user_msg));
+            if !asst_snippet.is_empty() {
+                memory_text.push_str(&format!("    AI: {}\n", asst_snippet));
+            }
+            if !tools.is_empty() {
+                memory_text.push_str(&format!("    Tools: {}\n", tools));
+            }
         }
     }
 
-    // Cap at ~3000 chars (~750 tokens)
+    // Old memories as supplement
+    if !old_memories.is_empty() {
+        let mut by_category: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+        for (content, category) in &old_memories {
+            by_category.entry(category.as_str()).or_default().push(content.as_str());
+        }
+        for (category, items) in &by_category {
+            memory_text.push_str(&format!("\n{}:\n", category));
+            for item in items.iter().take(5) {
+                memory_text.push_str(&format!("  - {}\n", item));
+            }
+        }
+    }
+
+    // Cap at ~3000 chars
     if memory_text.len() > 3000 {
-        memory_text.truncate(3000);
-        memory_text.push_str("\n[...more memories available]");
+        let mut end = 3000;
+        while end > 0 && !memory_text.is_char_boundary(end) { end -= 1; }
+        memory_text.truncate(end);
+        memory_text.push_str("\n[...more context available via search]");
     }
 
     // Inject into system prompt
@@ -173,7 +200,66 @@ pub async fn inject_memories(db: &Db, body: &mut Value, project_path: &str) {
         }
     }
 
-    info!(count = memories.len(), project = project_path, "Injected memories");
+    let count = deep_context.len() + old_memories.len();
+    info!(count, project = project_path, "Injected context");
+}
+
+/// Get recent conversation turns for this project (last 7 days, max 10).
+async fn get_recent_turns(db: &Db, project_path: &str) -> Vec<(String, String, String, String)> {
+    let db = db.clone();
+    let project = project_path.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = db.blocking_lock();
+
+        let mut stmt = conn.prepare(
+            "SELECT t.user_message, t.assistant_message, t.timestamp,
+                    GROUP_CONCAT(ti.tool_name, ', ') as tools
+             FROM turns t
+             JOIN conversations c ON t.conversation_id = c.id
+             LEFT JOIN tool_invocations ti ON ti.turn_id = t.id
+             WHERE c.project_path = ?1
+               AND t.timestamp > strftime('%s','now') - 604800
+               AND t.user_message IS NOT NULL
+               AND t.user_message != ''
+             GROUP BY t.id
+             ORDER BY t.timestamp DESC
+             LIMIT 10"
+        ).ok()?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64).unwrap_or(0);
+
+        let rows: Vec<(String, String, String, String)> = stmt.query_map(
+            rusqlite::params![project],
+            |row| {
+                let user: String = row.get(0)?;
+                let asst: String = row.get::<_, Option<String>>(1)?.unwrap_or_default();
+                let ts: i64 = row.get(2)?;
+                let tools: String = row.get::<_, Option<String>>(3)?.unwrap_or_default();
+
+                // Format age
+                let diff = now - ts;
+                let age = if diff < 3600 { format!("{}m ago", diff / 60) }
+                    else if diff < 86400 { format!("{}h ago", diff / 3600) }
+                    else { format!("{}d ago", diff / 86400) };
+
+                // Truncate assistant message
+                let snippet = if asst.len() > 150 {
+                    let mut end = 150;
+                    while end > 0 && !asst.is_char_boundary(end) { end -= 1; }
+                    format!("{}...", &asst[..end])
+                } else {
+                    asst
+                };
+
+                Ok((user, snippet, tools, age))
+            }
+        ).ok()?.filter_map(|r| r.ok()).collect();
+
+        Some(rows)
+    }).await.ok().flatten().unwrap_or_default()
 }
 
 /// Query top memories by relevance and recency.
