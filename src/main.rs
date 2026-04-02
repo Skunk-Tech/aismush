@@ -582,6 +582,7 @@ async fn check_for_updates() {
 }
 
 /// Report anonymous stats to the global dashboard.
+/// Sends only the delta since the last report, not cumulative totals.
 async fn report_stats(state: &Arc<ProxyState>) {
     // Read from DB for accurate cumulative stats (survives restarts)
     let body = if let Some(ref database) = state.db {
@@ -591,13 +592,40 @@ async fn report_stats(state: &Arc<ProxyState>) {
         let comp_tokens_saved = (comp_orig - comp_final) / 4;
         let comp_cost_saved = comp_tokens_saved as f64 * 3.0 / 1_000_000.0;
 
+        // Current cumulative values
+        let cur_requests = db_stats["total_requests"].as_i64().unwrap_or(0);
+        let cur_claude = db_stats["claude_turns"].as_i64().unwrap_or(0);
+        let cur_deepseek = db_stats["deepseek_turns"].as_i64().unwrap_or(0);
+        let cur_routing_savings = db_stats["savings"].as_f64().unwrap_or(0.0);
+        let cur_comp_savings = (comp_cost_saved * 10000.0).round() / 10000.0;
+        let cur_comp_tokens = comp_tokens_saved;
+
+        // Compute deltas against last report
+        let mut last = state.last_reported.lock().await;
+        let delta_requests = cur_requests - last.requests;
+        let delta_claude = cur_claude - last.claude_turns;
+        let delta_deepseek = cur_deepseek - last.deepseek_turns;
+        let delta_routing = cur_routing_savings - last.routing_savings;
+        let delta_comp_savings = cur_comp_savings - last.compression_savings;
+        let delta_comp_tokens = cur_comp_tokens - last.compressed_tokens;
+
+        // Update last-reported snapshot
+        last.requests = cur_requests;
+        last.claude_turns = cur_claude;
+        last.deepseek_turns = cur_deepseek;
+        last.routing_savings = cur_routing_savings;
+        last.compression_savings = cur_comp_savings;
+        last.compressed_tokens = cur_comp_tokens;
+        drop(last);
+
         serde_json::json!({
-            "requests": db_stats["total_requests"].as_i64().unwrap_or(0),
-            "claude_turns": db_stats["claude_turns"].as_i64().unwrap_or(0),
-            "deepseek_turns": db_stats["deepseek_turns"].as_i64().unwrap_or(0),
-            "routing_savings": db_stats["savings"].as_f64().unwrap_or(0.0),
-            "compression_savings": (comp_cost_saved * 10000.0).round() / 10000.0,
-            "compressed_tokens": comp_tokens_saved,
+            "requests": delta_requests.max(0),
+            "claude_turns": delta_claude.max(0),
+            "deepseek_turns": delta_deepseek.max(0),
+            "routing_savings": if delta_routing > 0.0 { (delta_routing * 10000.0).round() / 10000.0 } else { 0.0 },
+            "compression_savings": if delta_comp_savings > 0.0 { (delta_comp_savings * 10000.0).round() / 10000.0 } else { 0.0 },
+            "compressed_tokens": delta_comp_tokens.max(0),
+            "instance_id": state.instance_id,
             "version": VERSION,
         })
     } else {
@@ -607,15 +635,17 @@ async fn report_stats(state: &Arc<ProxyState>) {
             "requests": stats.total_requests,
             "claude_turns": stats.claude_turns,
             "deepseek_turns": stats.deepseek_turns,
-            "savings": 0,
-            "compressed_bytes": stats.compressed_original_bytes - stats.compressed_final_bytes,
+            "routing_savings": 0,
+            "compression_savings": 0,
+            "compressed_tokens": 0,
+            "instance_id": state.instance_id,
             "version": VERSION,
         });
         drop(stats);
         body
     };
 
-    // Skip if nothing to report
+    // Skip if nothing new to report
     if body["requests"].as_i64().unwrap_or(0) == 0 {
         return;
     }

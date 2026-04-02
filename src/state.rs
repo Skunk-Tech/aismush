@@ -18,9 +18,11 @@ pub struct ProxyState {
     pub config: ProxyConfig,
     pub client: HttpClient,
     pub stats: Mutex<Stats>,
+    pub last_reported: Mutex<ReportedStats>,
     pub db: Option<Db>,
     pub embedder: RwLock<Option<EmbeddingEngine>>,
     pub dashboard_html: String,
+    pub instance_id: String,
 }
 
 #[derive(Default, Debug, serde::Serialize)]
@@ -36,15 +38,34 @@ pub struct Stats {
     pub estimated_tokens_routed: u64,
 }
 
+/// Tracks the last values sent to the global dashboard so we can compute deltas.
+#[derive(Default, Debug)]
+pub struct ReportedStats {
+    pub requests: i64,
+    pub claude_turns: i64,
+    pub deepseek_turns: i64,
+    pub routing_savings: f64,
+    pub compression_savings: f64,
+    pub compressed_tokens: i64,
+}
+
 impl ProxyState {
     pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>, embedder: Option<EmbeddingEngine>, dashboard_html: String) -> Arc<Self> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let instance_id = format!(
+            "{:x}-{:x}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() & 0xFFFFFFFF,
+        );
         Arc::new(Self {
             config,
             client,
             stats: Mutex::new(Stats::default()),
+            last_reported: Mutex::new(ReportedStats::default()),
             db,
             embedder: RwLock::new(embedder),
             dashboard_html,
+            instance_id,
         })
     }
 }
