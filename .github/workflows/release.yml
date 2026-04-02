@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04  # MUST stay 22.04 — older glibc (2.35) ensures binary runs on Debian 12+, Ubuntu 22.04+
             target: x86_64-unknown-linux-gnu
             artifact: aismush-linux-x86_64
             binary: aismush
