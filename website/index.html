@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AISmush — The AI Coding Cost Killer</title>
+<meta name="description" content="Cut AI coding costs by 90%. Smart model routing, AI-generated project agents, context compression, persistent memory, and context window management. One binary. One command.">
+<style>
+:root {
+  --bg: #0a0e17; --card: #131926; --border: #1e2a3a;
+  --text: #e2e8f0; --dim: #8b9ab5; --blue: #58a6ff;
+  --green: #3fb950; --purple: #bc8cff; --yellow: #d29922;
+  --red: #f85149; --font: -apple-system, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.6; }
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.container { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
+
+/* Hero */
+.hero {
+  text-align: center;
+  padding: 80px 20px 40px;
+  background: linear-gradient(180deg, #0d1525 0%, var(--bg) 100%);
+}
+.hero h1 { font-size: 52px; color: #fff; margin-bottom: 16px; font-weight: 800; letter-spacing: -1px; }
+.hero h1 .highlight { background: linear-gradient(135deg, var(--green), var(--blue)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.hero .subtitle { font-size: 22px; color: var(--dim); margin-bottom: 12px; max-width: 650px; margin-left: auto; margin-right: auto; }
+.hero .bold-claim { font-size: 28px; color: var(--green); font-weight: 700; margin-bottom: 32px; }
+.hero .cta-row { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-bottom: 40px; }
+.btn { display: inline-block; padding: 14px 28px; border-radius: 8px; font-weight: 700; font-size: 16px; font-family: var(--font); cursor: pointer; border: none; }
+.btn-primary { background: var(--green); color: #000; }
+.btn-primary:hover { background: #4cc95f; text-decoration: none; }
+.btn-secondary { background: transparent; color: var(--blue); border: 2px solid var(--border); }
+.btn-secondary:hover { border-color: var(--blue); text-decoration: none; }
+
+/* Live counter */
+.live-counter {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  max-width: 700px; margin: 0 auto 60px; padding: 24px 32px;
+}
+.live-counter h2 { color: var(--green); font-size: 12px; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 16px; text-align: center; font-family: var(--mono); }
+.counter-row { display: flex; justify-content: center; gap: 32px; flex-wrap: wrap; }
+.counter-item { text-align: center; }
+.counter-item .number { font-size: 32px; font-weight: 800; color: #fff; font-family: var(--mono); }
+.counter-item .label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+.counter-item .number.green { color: var(--green); }
+.pulse { animation: pulse 2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+
+/* Problem/Solution */
+.problem {
+  padding: 60px 0;
+  text-align: center;
+}
+.problem h2 { font-size: 32px; color: #fff; margin-bottom: 16px; }
+.problem p { font-size: 18px; color: var(--dim); max-width: 700px; margin: 0 auto 24px; }
+.problem .cost-compare {
+  display: flex; gap: 24px; justify-content: center; flex-wrap: wrap; margin-top: 32px;
+}
+.cost-box {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 24px 32px; min-width: 200px; text-align: center;
+}
+.cost-box .price { font-size: 36px; font-weight: 800; font-family: var(--mono); }
+.cost-box .desc { font-size: 13px; color: var(--dim); margin-top: 4px; }
+.cost-box.before .price { color: var(--red); }
+.cost-box.after .price { color: var(--green); }
+.cost-arrow { font-size: 32px; color: var(--dim); align-self: center; }
+
+/* Features */
+.features { padding: 60px 0; }
+.features h2 { font-size: 32px; color: #fff; text-align: center; margin-bottom: 48px; }
+.feature-block {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 32px;
+  margin-bottom: 48px; align-items: center;
+}
+.feature-block.reverse { direction: rtl; }
+.feature-block.reverse > * { direction: ltr; }
+.feature-content h3 { font-size: 24px; color: var(--blue); margin-bottom: 12px; }
+.feature-content .tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 4px; margin-bottom: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+.tag-new { background: #0d2818; color: var(--green); }
+.tag-hot { background: #2d1b0e; color: var(--yellow); }
+.tag-core { background: #1f1d2e; color: var(--purple); }
+.feature-content p { color: var(--dim); font-size: 15px; margin-bottom: 12px; }
+.feature-content ul { list-style: none; padding: 0; }
+.feature-content ul li { color: var(--dim); font-size: 14px; padding: 4px 0; }
+.feature-content ul li::before { content: "✓ "; color: var(--green); font-weight: bold; }
+.feature-visual {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 24px; font-family: var(--mono); font-size: 13px; color: var(--dim);
+  overflow: hidden;
+}
+.feature-visual .cmd { color: var(--green); }
+.feature-visual .comment { color: #484f58; }
+.feature-visual .highlight { color: var(--yellow); }
+.feature-visual .purple { color: var(--purple); }
+
+/* Install */
+.install {
+  text-align: center; padding: 48px 0;
+  background: var(--card); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  margin: 40px 0;
+}
+.install h2 { font-size: 28px; color: #fff; margin-bottom: 8px; }
+.install p { color: var(--dim); margin-bottom: 20px; }
+.code-block {
+  background: #0d1117; border: 1px solid var(--border); border-radius: 8px;
+  padding: 16px 24px; font-size: 15px; color: var(--green); display: inline-block;
+  font-family: var(--mono); cursor: pointer; position: relative;
+}
+.code-block:hover::after { content: 'Click to copy'; position: absolute; top: -28px; right: 0; font-size: 11px; color: var(--dim); background: var(--card); padding: 2px 8px; border-radius: 4px; }
+.code-block.copied::after { content: 'Copied!'; color: var(--green); }
+.platforms { margin-top: 16px; display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+.platforms a { color: var(--dim); font-size: 13px; border: 1px solid var(--border); padding: 6px 16px; border-radius: 6px; }
+.platforms a:hover { border-color: var(--blue); color: var(--blue); text-decoration: none; }
+
+/* Coming soon */
+.coming-soon {
+  padding: 60px 0; text-align: center;
+}
+.coming-soon h2 { font-size: 28px; color: #fff; margin-bottom: 24px; }
+.roadmap { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+.roadmap-item {
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 20px 24px; min-width: 200px; text-align: left;
+}
+.roadmap-item h4 { color: var(--yellow); font-size: 15px; margin-bottom: 4px; }
+.roadmap-item p { color: var(--dim); font-size: 13px; }
+
+/* How it works */
+.how-works { padding: 60px 0; text-align: center; }
+.how-works h2 { font-size: 28px; color: #fff; margin-bottom: 32px; }
+.flow-steps { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; max-width: 800px; margin: 0 auto; }
+.flow-step {
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 20px; flex: 1; min-width: 180px; text-align: center;
+}
+.flow-step .num { font-size: 28px; font-weight: 800; color: var(--blue); margin-bottom: 8px; }
+.flow-step h4 { font-size: 14px; color: #fff; margin-bottom: 4px; }
+.flow-step p { font-size: 12px; color: var(--dim); }
+
+/* Footer */
+.footer {
+  text-align: center; padding: 40px 20px; border-top: 1px solid var(--border);
+  color: var(--dim); font-size: 12px;
+}
+.footer a { color: var(--dim); }
+.footer a:hover { color: var(--blue); }
+.sponsor { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.sponsor a { color: var(--yellow); }
+
+@media (max-width: 768px) {
+  .hero h1 { font-size: 36px; }
+  .feature-block { grid-template-columns: 1fr; }
+  .feature-block.reverse { direction: ltr; }
+  .cost-compare { flex-direction: column; align-items: center; }
+  .cost-arrow { transform: rotate(90deg); }
+}
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<div class="hero">
+  <h1>Stop Burning Money on <span class="highlight">AI Coding</span></h1>
+  <p class="subtitle">AISmush is a drop-in proxy that makes Claude Code 90% cheaper — without changing how you work.</p>
+  <p class="bold-claim">Real users. Real savings. $0.03 sessions that used to cost $30.</p>
+  <div class="cta-row">
+    <a class="btn btn-primary" href="https://github.com/Skunk-Tech/aismush">Get AISmush Free</a>
+    <a class="btn btn-secondary" href="https://github.com/Skunk-Tech/aismush#quick-start">See How It Works</a>
+  </div>
+</div>
+
+<!-- LIVE COUNTER -->
+<div class="container">
+<div class="live-counter">
+  <h2 class="pulse">Community Savings — Live</h2>
+  <div class="counter-row">
+    <div class="counter-item">
+      <div class="number green" id="savings">$0.00</div>
+      <div class="label">Total Saved</div>
+    </div>
+    <div class="counter-item">
+      <div class="number" id="routing-savings" style="color:var(--purple)">$0.00</div>
+      <div class="label">Routing Savings</div>
+    </div>
+    <div class="counter-item">
+      <div class="number" id="comp-savings" style="color:var(--yellow)">$0.00</div>
+      <div class="label">Compression Savings</div>
+    </div>
+  </div>
+  <div class="counter-row" style="margin-top:12px">
+    <div class="counter-item">
+      <div class="number" id="requests">0</div>
+      <div class="label">Requests</div>
+    </div>
+    <div class="counter-item">
+      <div class="number" id="tokens-saved" style="color:var(--green)">0</div>
+      <div class="label">Tokens Compressed</div>
+    </div>
+    <div class="counter-item">
+      <div class="number" id="users">0</div>
+      <div class="label">Users</div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- PROBLEM -->
+<div class="container">
+<div class="problem">
+  <h2>Claude Code is incredible. The bill isn't.</h2>
+  <p>A heavy coding session burns through $20-50 in API costs. Most of those tokens are spent on mechanical tasks — reading files, processing tool results, making simple edits — that don't need Claude's $15/M token brain.</p>
+  <div class="cost-compare">
+    <div class="cost-box before">
+      <div class="price">$30+</div>
+      <div class="desc">Typical session<br>100% Claude</div>
+    </div>
+    <div class="cost-arrow">→</div>
+    <div class="cost-box after">
+      <div class="price">$3</div>
+      <div class="desc">Same session<br>with AISmush</div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- FEATURES -->
+<div class="container">
+<div class="features">
+  <h2>Six Weapons Against Token Waste</h2>
+
+  <!-- Feature 1: Agents -->
+  <div class="feature-block">
+    <div class="feature-content">
+      <span class="tag tag-new">Game Changer</span>
+      <h3>AI-Generated Project Agents</h3>
+      <p>One command scans your codebase, sends it to AI for deep analysis, and generates Claude Code agents <strong>customized to YOUR project</strong> — your patterns, your frameworks, your architecture.</p>
+      <p>Not generic templates. Agents that know your specific file structure, your naming conventions, your test framework, your build commands.</p>
+      <ul>
+        <li>Scans your codebase in seconds</li>
+        <li>5-7 AI calls for deep analysis (~$0.03)</li>
+        <li>Generates agents, skills, and CLAUDE.md</li>
+        <li>Each agent assigned the cheapest model that can do the job</li>
+        <li>Resumes where it left off if interrupted</li>
+      </ul>
+    </div>
+    <div class="feature-visual">
+      <div class="cmd">$ aismush --scan</div><br><br>
+      <span class="comment"># Analyzing your codebase...</span><br>
+      Detected: <span class="highlight">Rust + TypeScript + React</span><br>
+      Type: fullstack web app (complex)<br><br>
+      <span class="comment"># Generating project-specific agents:</span><br>
+      ├─ <span class="purple">rust-expert</span> (sonnet) ✓<br>
+      ├─ <span class="purple">frontend-engineer</span> (sonnet) ✓<br>
+      ├─ <span class="purple">test-runner</span> (haiku) ✓<br>
+      ├─ <span class="purple">debugger</span> (sonnet) ✓<br>
+      └─ <span class="purple">explorer</span> (haiku) ✓<br><br>
+      <span class="cmd">Created 5 agents, 8 skills, CLAUDE.md</span>
+    </div>
+  </div>
+
+  <!-- Feature 2: Smart Routing -->
+  <div class="feature-block reverse">
+    <div class="feature-content">
+      <span class="tag tag-core">Core Feature</span>
+      <h3>Smart Model Routing</h3>
+      <p>AISmush automatically detects what kind of work each turn requires and routes it to the <strong>cheapest model that can handle it</strong>.</p>
+      <p>Planning and architecture? Claude ($15/M). Reading files and making edits? DeepSeek ($0.27/M). That's a <strong>55x cost difference</strong> on the turns that matter most.</p>
+      <ul>
+        <li>Zero latency overhead — pure heuristic routing</li>
+        <li>Claude for reasoning, DeepSeek for execution</li>
+        <li>Automatic failover between providers</li>
+        <li>Error recovery detection (3+ errors → Claude)</li>
+      </ul>
+    </div>
+    <div class="feature-visual">
+      <span class="comment"># What happens behind the scenes:</span><br><br>
+      "Plan the auth system" → <span class="purple">Claude</span> <span class="comment">($0.45)</span><br>
+      Tool result: Read file → <span class="cmd">DeepSeek</span> <span class="comment">($0.001)</span><br>
+      Tool result: Edit file → <span class="cmd">DeepSeek</span> <span class="comment">($0.001)</span><br>
+      Tool result: Run tests → <span class="cmd">DeepSeek</span> <span class="comment">($0.001)</span><br>
+      "Debug this error" → <span class="purple">Claude</span> <span class="comment">($0.12)</span><br>
+      Tool result: Grep → <span class="cmd">DeepSeek</span> <span class="comment">($0.001)</span><br><br>
+      <span class="highlight">Session: $0.58 instead of $12.40</span>
+    </div>
+  </div>
+
+  <!-- Feature 3: Compression -->
+  <div class="feature-block">
+    <div class="feature-content">
+      <span class="tag tag-core">Token Saver</span>
+      <h3>Context Compression</h3>
+      <p>Every tool result passes through our compression engine before reaching the AI. We strip what the AI doesn't need while keeping what it does.</p>
+      <p><strong>Content-type aware</strong> — we know the difference between code (strip comments), JSON (never touch), and logs (deduplicate aggressively). Inspired by <a href="https://github.com/rtk-ai/rtk">RTK's</a> approach.</p>
+      <ul>
+        <li>20-50% fewer tokens on code results</li>
+        <li>Never corrupts JSON, YAML, or data formats</li>
+        <li>Smart truncation preserves function signatures</li>
+        <li>Aggressive log deduplication</li>
+      </ul>
+    </div>
+    <div class="feature-visual">
+      <span class="comment"># Before compression (2,400 tokens):</span><br>
+      <span style="color:#666">// Helper function for auth<br>
+      // TODO: refactor this later<br>
+      /* Old implementation<br>
+      &nbsp;&nbsp; removed in v2 */<br></span>
+      fn validate(token: &str) {<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;...<br>
+      }<br><br>
+      <span class="comment"># After compression (1,200 tokens):</span><br>
+      fn validate(token: &str) {<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;...<br>
+      }<br><br>
+      <span class="highlight">50% saved. Zero information lost.</span>
+    </div>
+  </div>
+
+  <!-- Feature 4: Deep Memory -->
+  <div class="feature-block reverse">
+    <div class="feature-content">
+      <span class="tag tag-hot">Nobody Has Solved This</span>
+      <h3>Deep Memory — Full Conversation Capture</h3>
+      <p>Every developer's frustration: <em>"I already told you this yesterday."</em></p>
+      <p>Other tools remember tool names. AISmush captures <strong>entire conversations</strong> — your questions, the AI's answers, the reasoning, the decisions. Searchable by meaning, not just keywords.</p>
+      <ul>
+        <li>Full conversation capture (not just tool names)</li>
+        <li>Local semantic search — MiniLM-L6-v2, ~10ms, no cloud</li>
+        <li>"auth bug" finds conversations about "JWT validation"</li>
+        <li>Search via dashboard, CLI, or API</li>
+        <li>Auto-injects relevant past context into new sessions</li>
+        <li>Configurable retention (30 days default, or forever)</li>
+      </ul>
+    </div>
+    <div class="feature-visual">
+      <span class="cmd">$ aismush --search "auth token bug"</span><br><br>
+      <span class="comment"># Found 3 relevant conversations:</span><br><br>
+      <span class="highlight">1.</span> [3 days ago] score: 0.92<br>
+      &nbsp;&nbsp;You: "Fix the JWT token expiry bug"<br>
+      &nbsp;&nbsp;AI: "The issue is in validate_token().<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;The expiry check uses > instead of >=..."<br>
+      &nbsp;&nbsp;Tools: Read(jwt.rs), Edit(jwt.rs), Bash(cargo test)<br><br>
+      <span class="highlight">2.</span> [5 days ago] score: 0.87<br>
+      &nbsp;&nbsp;You: "Add refresh token support"<br>
+      &nbsp;&nbsp;AI: "I'll create a refresh endpoint that..."<br>
+      &nbsp;&nbsp;- Added WebSocket broadcast server
+    </div>
+  </div>
+
+  <!-- Feature 5: Context Window -->
+  <div class="feature-block">
+    <div class="feature-content">
+      <span class="tag tag-core">Reliability</span>
+      <h3>Context Window Management</h3>
+      <p>Claude handles 200K tokens. DeepSeek handles 64K. Long sessions blow past DeepSeek's limit, causing failures and lost work.</p>
+      <p>AISmush <strong>automatically manages the mismatch</strong>. Old tool results get trimmed, large contexts route to Claude, and your work is never blocked.</p>
+      <ul>
+        <li>Under 55K: both providers work fine</li>
+        <li>55-64K: trim old tool results for DeepSeek</li>
+        <li>Over 64K: auto-route to Claude (200K window)</li>
+        <li>Never breaks tool_use/tool_result pairing</li>
+      </ul>
+    </div>
+    <div class="feature-visual">
+      <span class="comment"># Context growing during long session:</span><br><br>
+      Turn 1: 5K tokens → <span class="cmd">DeepSeek</span> ✓<br>
+      Turn 10: 25K tokens → <span class="cmd">DeepSeek</span> ✓<br>
+      Turn 20: 48K tokens → <span class="cmd">DeepSeek</span> ✓<br>
+      Turn 25: 58K tokens → <span class="highlight">compress + DeepSeek</span> ✓<br>
+      Turn 30: 72K tokens → <span class="purple">auto-route to Claude</span> ✓<br><br>
+      <span class="comment"># Without AISmush: DeepSeek fails at 64K.</span><br>
+      <span class="comment"># With AISmush: seamless handoff.</span>
+    </div>
+  </div>
+
+  <!-- Feature 6: Dashboard -->
+  <div class="feature-block reverse">
+    <div class="feature-content">
+      <span class="tag tag-core">Transparency</span>
+      <h3>Real-Time Cost Dashboard</h3>
+      <p>See exactly what you're saving. Every request tracked: which provider, how many tokens, what it cost, what it would have cost on Claude alone.</p>
+      <ul>
+        <li>Live dashboard at localhost:1849/dashboard</li>
+        <li>Per-request cost breakdown</li>
+        <li>Savings percentage with all-Claude comparison</li>
+        <li>Request history with full detail</li>
+        <li>Memory viewer</li>
+        <li>Stats persist across sessions in SQLite</li>
+      </ul>
+    </div>
+    <div class="feature-visual">
+      <span class="highlight">Session Stats</span><br><br>
+      Requests: <span class="cmd">142</span><br>
+      Claude turns: <span class="purple">12</span> (planning/debugging)<br>
+      DeepSeek turns: <span class="cmd">130</span> (execution)<br><br>
+      Actual cost: <span class="highlight">$1.82</span><br>
+      All-Claude cost: <span style="color:var(--red)">$18.40</span><br>
+      <span class="cmd" style="font-size:16px;font-weight:bold">Saved: $16.58 (90.1%)</span>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- HOW IT WORKS -->
+<div class="container">
+<div class="how-works">
+  <h2>Three Steps. That's It.</h2>
+  <div class="flow-steps">
+    <div class="flow-step">
+      <div class="num">1</div>
+      <h4>Install</h4>
+      <p>One command. 3.6MB binary. No dependencies.</p>
+    </div>
+    <div class="flow-step">
+      <div class="num">2</div>
+      <h4>Scan</h4>
+      <p>aismush --scan generates agents for your project.</p>
+    </div>
+    <div class="flow-step">
+      <div class="num">3</div>
+      <h4>Code</h4>
+      <p>aismush-start launches Claude Code. You save 90%.</p>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- TWO MODES -->
+<div class="container">
+<div style="padding:40px 0;text-align:center">
+  <h2 style="font-size:28px;color:#fff;margin-bottom:24px">Two Ways to Run</h2>
+  <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;max-width:700px;margin:0 auto">
+    <div style="flex:1;min-width:280px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:left">
+      <h3 style="color:var(--green);margin-bottom:8px">Smart Routing <span style="font-size:12px;color:var(--dim)">(Default)</span></h3>
+      <p style="color:var(--dim);font-size:14px;margin-bottom:12px">Routes between Claude + DeepSeek. Max savings (~90%). Needs a free DeepSeek API key.</p>
+      <code style="font-family:var(--mono);color:var(--green);font-size:13px">aismush-start</code>
+    </div>
+    <div style="flex:1;min-width:280px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:left">
+      <h3 style="color:var(--purple);margin-bottom:8px">Direct Mode <span style="font-size:12px;color:var(--dim)">(Claude Only)</span></h3>
+      <p style="color:var(--dim);font-size:14px;margin-bottom:12px">No DeepSeek needed. Still get compression, memory, agents, and tracking. Dashboard shows potential savings.</p>
+      <code style="font-family:var(--mono);color:var(--purple);font-size:13px">aismush-start --direct</code>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- INSTALL -->
+<div class="install">
+  <h2>Install in 10 Seconds</h2>
+  <p>One command on any platform. Works with or without a DeepSeek key.</p>
+  <p style="color:var(--dim);font-size:13px;margin-bottom:8px">Linux &amp; macOS:</p>
+  <div class="code-block" onclick="copyInstall(this)">
+    curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh | bash
+  </div>
+  <p style="color:var(--dim);font-size:13px;margin-top:16px;margin-bottom:8px">Windows (PowerShell):</p>
+  <div class="code-block" onclick="copyInstall(this)">
+    irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 | iex
+  </div>
+  <div class="platforms" style="margin-top:20px">
+    <a href="https://github.com/Skunk-Tech/aismush/releases/latest">All Releases</a>
+    <a href="https://github.com/Skunk-Tech/aismush">GitHub</a>
+  </div>
+</div>
+
+<!-- COMING SOON -->
+<div class="container">
+<div class="coming-soon">
+  <h2>What's Coming Next</h2>
+  <div class="roadmap">
+    <div class="roadmap-item">
+      <h4>Local Models</h4>
+      <p>Route to Ollama/llama.cpp for zero-cost execution on your own hardware.</p>
+    </div>
+    <div class="roadmap-item">
+      <h4>Multi-Provider</h4>
+      <p>Add Gemini, GPT-4, Mistral as routing targets. Best model for each task.</p>
+    </div>
+    <div class="roadmap-item">
+      <h4>Team Dashboard</h4>
+      <p>Shared savings dashboard for engineering teams. Track ROI across developers.</p>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- FOOTER -->
+<div class="footer">
+  <p>
+    <a href="https://github.com/Skunk-Tech/aismush">GitHub</a> &middot;
+    <a href="https://github.com/Skunk-Tech/aismush/releases">Releases</a> &middot;
+    <a href="https://github.com/Skunk-Tech/aismush#readme">Documentation</a> &middot;
+    MIT Licensed &middot; 3,400+ lines of Rust
+  </p>
+  <p style="margin-top: 8px;">Created by <a href="https://github.com/Skunk-Tech">Garret Acott / Skunk Tech</a></p>
+  <div class="sponsor">
+    Sponsored by the world's #1 PBN software &mdash; <a href="https://turbosubdomains.com/">TurboSubdomains.com</a>
+  </div>
+</div>
+
+<script>
+function fmtDollars(n) { return '$' + (n || 0).toFixed(2); }
+function fmtNum(n) { return n > 1e6 ? (n/1e6).toFixed(1)+'M' : n > 1e3 ? (n/1e3).toFixed(1)+'K' : (n||0).toLocaleString(); }
+
+async function loadStats() {
+  try {
+    const r = await fetch('https://aismush.us.com/api/stats');
+    const s = await r.json();
+    document.getElementById('savings').textContent = fmtDollars(s.total_savings);
+    document.getElementById('routing-savings').textContent = fmtDollars(s.total_routing_savings);
+    document.getElementById('comp-savings').textContent = fmtDollars(s.total_compression_savings);
+    document.getElementById('requests').textContent = fmtNum(s.total_requests);
+    document.getElementById('tokens-saved').textContent = fmtNum(s.total_compressed_tokens);
+    document.getElementById('users').textContent = (s.total_users || 0).toLocaleString();
+  } catch(e) {}
+}
+
+function copyInstall(el) {
+  navigator.clipboard.writeText(el.textContent.trim());
+  el.classList.add('copied');
+  setTimeout(() => el.classList.remove('copied'), 2000);
+}
+
+loadStats();
+setInterval(loadStats, 30000);
+</script>
+</body>
+</html>

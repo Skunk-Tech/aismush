@@ -88,17 +88,11 @@ Open `http://localhost:1849/dashboard` to see:
 - Memory viewer with search and delete
 - Request history with full detail
 
-### Runs Everywhere
-- **Pure Rust binary** — no C runtime dependencies, no ONNX Runtime download
-- Native builds for Linux x86_64, macOS ARM, macOS Intel, and Windows
-- Works on Debian 12+, Ubuntu 22.04+, and any modern Linux (glibc 2.35+)
-- ~28 MB single binary with embedded embedding engine
-
 ### Zero Overhead Streaming
 - Written in Rust with Tokio + Hyper (same stack as Cloudflare's infrastructure)
 - Frame-by-frame response streaming — feels identical to direct Claude connection
 - Connection pooling with keep-alive (no TLS handshake per request)
-- ~15 MB memory usage
+- ~3.5 MB binary, ~15 MB memory usage
 
 ## Two Modes
 
@@ -134,12 +128,18 @@ First run asks for your DeepSeek API key (free at [platform.deepseek.com](https:
 
 That's it. Two commands total: install, then run.
 
-### Windows
-
-Download from the [Releases page](https://github.com/Skunk-Tech/aismush/releases), extract, and run:
+### One-Line Install (Windows)
 
 ```powershell
-.\start.ps1
+irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 | iex
+```
+
+This downloads the binary, installs it to `%LOCALAPPDATA%\AISmush\`, and adds it to your PATH.
+
+### Run
+
+```powershell
+aismush-start
 ```
 
 First run prompts for your DeepSeek API key and saves it automatically, same as Linux/macOS.
@@ -276,7 +276,7 @@ dashboard.rs   — Live HTML dashboard
 state.rs       — Shared state types
 ```
 
-**Dependencies:** tokio, hyper, rustls, serde, rusqlite (bundled), tract (pure Rust ONNX). No OpenSSL, no Node.js, no C runtime dependencies.
+**Dependencies:** tokio, hyper, rustls, serde, rusqlite (bundled). No OpenSSL, no Node.js, no runtime dependencies.
 
 ## FAQ
 
@@ -333,13 +333,20 @@ Anonymous usage stats (request counts and savings only — no personal data, no 
 
 - [Claude Code](https://claude.ai/code) CLI installed (or any Anthropic API client)
 - [DeepSeek API key](https://platform.deepseek.com/api_keys) (free tier available)
-- Linux x86_64 (Debian 12+, Ubuntu 22.04+, or any glibc 2.35+), macOS (Intel or Apple Silicon), or Windows x86_64
+- Linux x86_64, macOS (Intel or Apple Silicon), or Windows x86_64
 
 ## Uninstall
 
+**Linux / macOS:**
 ```bash
 rm ~/.local/bin/aismush ~/.local/bin/aismush-start
 rm -rf ~/.hybrid-proxy/
+```
+
+**Windows (PowerShell):**
+```powershell
+Remove-Item -Recurse "$env:LOCALAPPDATA\AISmush"
+Remove-Item -Recurse "$env:USERPROFILE\.hybrid-proxy"
 ```
 
 ## License
