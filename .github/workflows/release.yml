@@ -23,6 +23,10 @@ jobs:
             target: aarch64-apple-darwin
             artifact: aismush-macos-arm64
             binary: aismush
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact: aismush-macos-x86_64
+            binary: aismush
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: aismush-windows-x86_64
@@ -81,5 +85,6 @@ jobs:
           files: |
             aismush-linux-x86_64/aismush-linux-x86_64.tar.gz
             aismush-macos-arm64/aismush-macos-arm64.tar.gz
+            aismush-macos-x86_64/aismush-macos-x86_64.tar.gz
             aismush-windows-x86_64/aismush-windows-x86_64.tar.gz
           generate_release_notes: true

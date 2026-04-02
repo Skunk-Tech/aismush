@@ -1,22 +1,23 @@
-//! Local embedding engine using MiniLM-L6-v2 via ONNX Runtime.
+//! Local embedding engine using MiniLM-L6-v2 via tract (pure Rust ONNX).
 //!
 //! Embeds text into 384-dimensional vectors for semantic search.
-//! Runs entirely locally — no cloud, no API cost, ~10ms per embedding.
+//! Runs entirely locally — no cloud, no API cost, ~10-20ms per embedding.
 
-use ort::session::Session;
-use ort::value::Tensor;
+use tract_onnx::prelude::*;
 use std::path::Path;
 use std::sync::Mutex as StdMutex;
 use tracing::info;
 
 const EMBEDDING_DIM: usize = 384;
 
+type Model = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
+
 pub struct EmbeddingEngine {
-    session: StdMutex<Session>,
+    model: StdMutex<Model>,
     tokenizer: tokenizers::Tokenizer,
 }
 
-// Safe because Session is only accessed through Mutex
+// Safe because Model is only accessed through Mutex
 unsafe impl Send for EmbeddingEngine {}
 unsafe impl Sync for EmbeddingEngine {}
 
@@ -31,19 +32,30 @@ impl EmbeddingEngine {
         let tp = models_dir.join("tokenizer.json");
 
         let result = tokio::task::spawn_blocking(move || {
-            let session = Session::builder()
-                .map_err(|e| format!("Session: {}", e))?
-                .commit_from_file(&mp)
-                .map_err(|e| format!("Model: {}", e))?;
+            let sym = tract_onnx::prelude::SymbolScope::default().sym("S");
+            let s = TDim::from(sym);
+            let model = tract_onnx::onnx()
+                .model_for_path(&mp)
+                .map_err(|e| format!("Model load: {}", e))?
+                .with_input_fact(0, InferenceFact::dt_shape(i64::datum_type(), &[1.to_dim(), s.clone()]))
+                .map_err(|e| format!("Input 0: {}", e))?
+                .with_input_fact(1, InferenceFact::dt_shape(i64::datum_type(), &[1.to_dim(), s.clone()]))
+                .map_err(|e| format!("Input 1: {}", e))?
+                .with_input_fact(2, InferenceFact::dt_shape(i64::datum_type(), &[1.to_dim(), s.clone()]))
+                .map_err(|e| format!("Input 2: {}", e))?
+                .into_optimized()
+                .map_err(|e| format!("Optimize: {}", e))?
+                .into_runnable()
+                .map_err(|e| format!("Runnable: {}", e))?;
 
             let tokenizer = tokenizers::Tokenizer::from_file(&tp)
                 .map_err(|e| format!("Tokenizer: {}", e))?;
 
-            Ok::<_, String>((session, tokenizer))
+            Ok::<_, String>((model, tokenizer))
         }).await.map_err(|e| format!("Spawn: {}", e))??;
 
-        info!("Embedding engine ready (MiniLM-L6-v2, {}D)", EMBEDDING_DIM);
-        Ok(Self { session: StdMutex::new(result.0), tokenizer: result.1 })
+        info!("Embedding engine ready (MiniLM-L6-v2, {}D, tract)", EMBEDDING_DIM);
+        Ok(Self { model: StdMutex::new(result.0), tokenizer: result.1 })
     }
 
     /// Embed text → 384-dim L2-normalized vector.
@@ -60,32 +72,28 @@ impl EmbeddingEngine {
 
         if seq_len == 0 { return Ok(vec![0.0; EMBEDDING_DIM]); }
 
-        // Create tensors: (shape_as_vec, data_as_boxed_slice)
-        let ids_tensor = Tensor::from_array(
-            (vec![1i64, seq_len as i64], input_ids.into_boxed_slice())
-        ).map_err(|e| format!("Tensor ids: {}", e))?;
+        // Create tract tensors [1, seq_len]
+        let ids_tensor = tract_ndarray::Array2::from_shape_vec((1, seq_len), input_ids)
+            .map_err(|e| format!("Array ids: {}", e))?.into_tensor();
+        let mask_tensor = tract_ndarray::Array2::from_shape_vec((1, seq_len), attention_mask.clone())
+            .map_err(|e| format!("Array mask: {}", e))?.into_tensor();
+        let type_tensor = tract_ndarray::Array2::from_shape_vec((1, seq_len), token_type_ids)
+            .map_err(|e| format!("Array types: {}", e))?.into_tensor();
 
-        let mask_tensor = Tensor::from_array(
-            (vec![1i64, seq_len as i64], attention_mask.clone().into_boxed_slice())
-        ).map_err(|e| format!("Tensor mask: {}", e))?;
-
-        let type_tensor = Tensor::from_array(
-            (vec![1i64, seq_len as i64], token_type_ids.into_boxed_slice())
-        ).map_err(|e| format!("Tensor types: {}", e))?;
-
-        // Run inference through mutex
-        let mut session = self.session.lock().map_err(|e| format!("Lock: {}", e))?;
-        let outputs = session.run(ort::inputs![
-            "input_ids" => ids_tensor,
-            "attention_mask" => mask_tensor,
-            "token_type_ids" => type_tensor,
+        // Run inference
+        let model = self.model.lock().map_err(|e| format!("Lock: {}", e))?;
+        let outputs = model.run(tvec![
+            ids_tensor.into(),
+            mask_tensor.into(),
+            type_tensor.into(),
         ]).map_err(|e| format!("Inference: {}", e))?;
 
-        // Extract output: flat slice with shape [1, seq_len, hidden_dim]
-        let (shape, data) = outputs[0].try_extract_tensor::<f32>()
+        // Extract output: [1, seq_len, hidden_dim]
+        let output = outputs[0].to_array_view::<f32>()
             .map_err(|e| format!("Extract: {}", e))?;
-        let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+        let dims = output.shape();
         let hidden_dim = if dims.len() == 3 { dims[2] } else { EMBEDDING_DIM };
+        let data = output.as_slice().ok_or("Cannot get output slice")?;
 
         // Mean pooling over non-padding tokens
         let mut embedding = vec![0.0f32; hidden_dim];
