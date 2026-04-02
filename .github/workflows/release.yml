@@ -23,7 +23,7 @@ jobs:
             target: aarch64-apple-darwin
             artifact: aismush-macos-arm64
             binary: aismush
-          - os: macos-13
+          - os: macos-14
             target: x86_64-apple-darwin
             artifact: aismush-macos-x86_64
             binary: aismush
