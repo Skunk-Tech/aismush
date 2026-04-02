@@ -12,22 +12,19 @@ use tracing::{debug, info, warn};
 
 /// Extract observations from the request body's messages.
 /// Looks for tool_use blocks (what the AI did) and captures them.
-pub async fn extract_from_request(db: &Db, project_path: &str, body: &Value) {
+/// Extract observations from the request body (pure parsing, no I/O).
+pub fn extract_observations(body: &Value) -> Vec<(String, String)> {
     let Some(messages) = body.get("messages").and_then(|m| m.as_array()) else {
-        return;
+        return Vec::new();
     };
 
-    // Only look at the last few messages for new observations
-    // (older ones were already captured in previous requests)
     let recent = if messages.len() > 4 { &messages[messages.len()-4..] } else { messages.as_slice() };
-
     let mut observations: Vec<(String, String)> = Vec::new();
 
     for msg in recent {
         let Some(content) = msg.get("content").and_then(|c| c.as_array()) else { continue };
 
         for block in content {
-            // Capture tool_use blocks (what the AI decided to do)
             if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
                 let tool_name = block.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
                 let input = block.get("input");
@@ -47,7 +44,6 @@ pub async fn extract_from_request(db: &Db, project_path: &str, body: &Value) {
                     }
                     "Bash" | "bash" => {
                         let cmd = input.and_then(|i| i.get("command")).and_then(|c| c.as_str()).unwrap_or("?");
-                        // Truncate long commands
                         let short = if cmd.len() > 100 { &cmd[..100] } else { cmd };
                         format!("Ran: {}", short)
                     }
@@ -59,10 +55,7 @@ pub async fn extract_from_request(db: &Db, project_path: &str, body: &Value) {
                         let pattern = input.and_then(|i| i.get("pattern")).and_then(|p| p.as_str()).unwrap_or("?");
                         format!("Found files: {}", pattern)
                     }
-                    _ => {
-                        // Generic tool capture
-                        format!("Used tool: {}", tool_name)
-                    }
+                    _ => format!("Used tool: {}", tool_name),
                 };
 
                 let category = match tool_name {
@@ -75,15 +68,12 @@ pub async fn extract_from_request(db: &Db, project_path: &str, body: &Value) {
                 observations.push((observation, category.to_string()));
             }
 
-            // Capture key text from assistant messages (decisions, not fluff)
             if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
                 if block.get("type").and_then(|t| t.as_str()) == Some("text") {
                     if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                        // Only capture short, decision-like statements
                         for line in text.lines() {
                             let t = line.trim();
                             if t.len() > 30 && t.len() < 200 {
-                                // Look for decision/action indicators
                                 if t.contains("created") || t.contains("installed") ||
                                    t.contains("configured") || t.contains("fixed") ||
                                    t.contains("changed") || t.contains("updated") ||
@@ -99,16 +89,17 @@ pub async fn extract_from_request(db: &Db, project_path: &str, body: &Value) {
         }
     }
 
+    observations.sort_by(|a, b| a.0.cmp(&b.0));
+    observations.dedup_by(|a, b| a.0 == b.0);
+    observations.truncate(20);
+    observations
+}
+
+/// Store pre-extracted observations in the database (background task).
+pub async fn store_observations(db: &Db, project_path: &str, observations: Vec<(String, String)>) {
     if observations.is_empty() {
         return;
     }
-
-    // Deduplicate
-    observations.sort_by(|a, b| a.0.cmp(&b.0));
-    observations.dedup_by(|a, b| a.0 == b.0);
-
-    // Cap per request
-    observations.truncate(20);
 
     let count = observations.len();
     let db = db.clone();
@@ -122,7 +113,7 @@ pub async fn extract_from_request(db: &Db, project_path: &str, body: &Value) {
                 params![project, content, category],
             ) {
                 Ok(1) => debug!(content = &content[..content.len().min(60)], "Memory stored"),
-                Ok(_) => {} // duplicate
+                Ok(_) => {}
                 Err(e) => warn!(error = %e, "Failed to store memory"),
             }
         }
@@ -299,6 +290,25 @@ pub async fn decay_scores(db: &Db) {
         let conn = db.blocking_lock();
         conn.execute("UPDATE memories SET relevance_score = relevance_score * 0.95", []).ok();
         conn.execute("DELETE FROM memories WHERE relevance_score < 0.1 AND last_accessed < strftime('%s','now') - 2592000", []).ok();
+    }).await.ok();
+}
+
+/// Periodic decay + prune for memories and turns (called every few hours).
+pub async fn decay_and_prune(db: &Db) {
+    let db = db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.blocking_lock();
+        // Decay memory scores
+        conn.execute("UPDATE memories SET relevance_score = relevance_score * 0.95", []).ok();
+        // Delete stale low-relevance memories (>30 days old, score < 0.1)
+        conn.execute("DELETE FROM memories WHERE relevance_score < 0.1 AND last_accessed < strftime('%s','now') - 2592000", []).ok();
+        // Prune old turns without embeddings (>90 days)
+        conn.execute("DELETE FROM turns WHERE embedding IS NULL AND timestamp < strftime('%s','now') - 7776000", []).ok();
+        // Cap total turns to 10000 most recent
+        conn.execute("DELETE FROM turns WHERE id NOT IN (SELECT id FROM turns ORDER BY id DESC LIMIT 10000)", []).ok();
+        // Clean up orphaned tool_invocations
+        conn.execute("DELETE FROM tool_invocations WHERE turn_id NOT IN (SELECT id FROM turns)", []).ok();
+        tracing::info!("Database cleanup complete");
     }).await.ok();
 }
 

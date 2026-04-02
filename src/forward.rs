@@ -18,6 +18,40 @@ fn full(data: impl Into<Bytes>) -> BoxBody<Bytes, hyper::Error> {
     Full::new(data.into()).map_err(|n| match n {}).boxed()
 }
 
+/// Parse a single SSE event block, extracting usage and assistant text incrementally.
+fn parse_sse_event(block: &str, usage: &mut tokens::TokenUsage, assistant_text: &mut String) {
+    for line in block.lines() {
+        let Some(json_str) = line.strip_prefix("data: ") else { continue };
+        if !json_str.starts_with('{') { continue; }
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) else { continue };
+
+        match val.get("type").and_then(|t| t.as_str()) {
+            Some("message_start") => {
+                if let Some(u) = val.get("message").and_then(|m| m.get("usage")) {
+                    usage.input_tokens = u["input_tokens"].as_u64().unwrap_or(0);
+                    usage.cache_read_tokens = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
+                    usage.cache_write_tokens = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+                }
+            }
+            Some("content_block_delta") => {
+                if let Some(text) = val.get("delta").and_then(|d| d.get("text")).and_then(|t| t.as_str()) {
+                    // Cap captured text at 32KB to prevent unbounded growth on large responses
+                    if assistant_text.len() < 32_768 {
+                        let remaining = 32_768 - assistant_text.len();
+                        assistant_text.push_str(&text[..text.len().min(remaining)]);
+                    }
+                }
+            }
+            Some("message_delta") => {
+                if let Some(u) = val.get("usage") {
+                    usage.output_tokens = u["output_tokens"].as_u64().unwrap_or(0);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn json_resp(status: StatusCode, body: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
     Response::builder()
         .status(status)
@@ -128,7 +162,9 @@ pub async fn claude(
 
             tokio::spawn(async move {
                 let mut total_bytes = 0u64;
-                let mut stream_data = String::new();
+                let mut usage = tokens::TokenUsage::default();
+                let mut assistant_text = String::new();
+                let mut sse_buf = String::new();
                 let mut stream = body_stream;
                 loop {
                     match stream.frame().await {
@@ -136,7 +172,13 @@ pub async fn claude(
                             if let Some(data) = frame.data_ref() {
                                 total_bytes += data.len() as u64;
                                 if let Ok(text) = std::str::from_utf8(data) {
-                                    stream_data.push_str(text);
+                                    // Parse SSE events incrementally
+                                    sse_buf.push_str(text);
+                                    while let Some(pos) = sse_buf.find("\n\n") {
+                                        let event_block = sse_buf[..pos].to_string();
+                                        sse_buf.drain(..pos + 2);
+                                        parse_sse_event(&event_block, &mut usage, &mut assistant_text);
+                                    }
                                 }
                             }
                             if tx.send(Ok(frame)).await.is_err() { break; }
@@ -145,8 +187,11 @@ pub async fn claude(
                         None => break,
                     }
                 }
+                // Flush remaining SSE buffer
+                if !sse_buf.is_empty() {
+                    parse_sse_event(&sse_buf, &mut usage, &mut assistant_text);
+                }
 
-                let usage = tokens::extract_usage(&stream_data);
                 let latency = start.elapsed().as_millis() as u64;
 
                 // Fallback token estimate if SSE parsing returned 0
@@ -173,16 +218,13 @@ pub async fn claude(
                         comp_original, comp_final,
                     ).await;
 
-                    // Extract memories from response
-                    // Memory extraction now happens in main.rs from request body
-
                     // Capture full conversation turn
-                    let assistant_msg = capture::assemble_response(&stream_data);
-                    if !user_msg.is_empty() || !assistant_msg.is_empty() {
+                    if !user_msg.is_empty() || !assistant_text.is_empty() {
                         let conv_id = capture::get_or_create_conversation(db, &project, false).await;
-                        capture::store_turn(db, state2.embedder.as_ref(), conv_id, &capture::TurnData {
+                        let embedder_guard = state2.embedder.read().await;
+                        capture::store_turn(db, embedder_guard.as_ref(), conv_id, &capture::TurnData {
                             user_message: user_msg.clone(),
-                            assistant_message: assistant_msg,
+                            assistant_message: assistant_text,
                             tools: tool_calls.clone(),
                             provider: "claude".to_string(),
                             model: model.clone(),
@@ -280,7 +322,9 @@ pub async fn deepseek(
 
             tokio::spawn(async move {
                 let mut total_bytes = 0u64;
-                let mut stream_data = String::new();
+                let mut usage = tokens::TokenUsage::default();
+                let mut assistant_text = String::new();
+                let mut sse_buf = String::new();
                 let mut stream = body_stream;
                 loop {
                     match stream.frame().await {
@@ -288,7 +332,12 @@ pub async fn deepseek(
                             if let Some(data) = frame.data_ref() {
                                 total_bytes += data.len() as u64;
                                 if let Ok(text) = std::str::from_utf8(data) {
-                                    stream_data.push_str(text);
+                                    sse_buf.push_str(text);
+                                    while let Some(pos) = sse_buf.find("\n\n") {
+                                        let event_block = sse_buf[..pos].to_string();
+                                        sse_buf.drain(..pos + 2);
+                                        parse_sse_event(&event_block, &mut usage, &mut assistant_text);
+                                    }
                                 }
                             }
                             if tx.send(Ok(frame)).await.is_err() { break; }
@@ -297,8 +346,10 @@ pub async fn deepseek(
                         None => break,
                     }
                 }
+                if !sse_buf.is_empty() {
+                    parse_sse_event(&sse_buf, &mut usage, &mut assistant_text);
+                }
 
-                let usage = tokens::extract_usage(&stream_data);
                 let latency = start.elapsed().as_millis() as u64;
 
                 let input_tokens = if usage.input_tokens > 0 { usage.input_tokens } else { (total_bytes / 4) as u64 };
@@ -324,15 +375,12 @@ pub async fn deepseek(
                         comp_original, comp_final,
                     ).await;
 
-                    // Memory extraction now happens in main.rs from request body
-
-                    // Capture full conversation turn
-                    let assistant_msg = capture::assemble_response(&stream_data);
-                    if !ds_user_msg.is_empty() || !assistant_msg.is_empty() {
+                    if !ds_user_msg.is_empty() || !assistant_text.is_empty() {
                         let conv_id = capture::get_or_create_conversation(db, &project, false).await;
-                        capture::store_turn(db, state2.embedder.as_ref(), conv_id, &capture::TurnData {
+                        let embedder_guard = state2.embedder.read().await;
+                        capture::store_turn(db, embedder_guard.as_ref(), conv_id, &capture::TurnData {
                             user_message: ds_user_msg.clone(),
-                            assistant_message: assistant_msg,
+                            assistant_message: assistant_text,
                             tools: ds_tool_calls.clone(),
                             provider: "deepseek".to_string(),
                             model: model.clone(),

@@ -172,26 +172,35 @@ async fn main() {
         .pool_max_idle_per_host(10)
         .build(https);
 
-    // Initialize embedding engine for semantic search
-    let embedder = match embeddings::EmbeddingEngine::new(&cfg.data_dir).await {
-        Ok(engine) => Some(engine),
-        Err(e) => {
-            warn!("Embedding engine unavailable: {} (search will use keywords only)", e);
-            None
-        }
-    };
-
     // Decay old memory scores on startup
     if let Some(ref db) = database {
         memory::decay_scores(db).await;
     }
 
-    let state = ProxyState::new(cfg.clone(), client, database, embedder);
+    // Start with no embedder — initialize it in background so the server can listen immediately
+    // Render dashboard HTML once at startup (static template, only port varies)
+    let dashboard_html = dashboard::render(cfg.port).await;
+    let state = ProxyState::new(cfg.clone(), client, database, None, dashboard_html);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));
     let listener = TcpListener::bind(addr).await.expect("Failed to bind port");
     info!(port = cfg.port, "Listening");
     info!("Dashboard: http://127.0.0.1:{}/dashboard", cfg.port);
+
+    // Initialize embedding engine in background so it doesn't block startup
+    let embed_state = state.clone();
+    let embed_data_dir = cfg.data_dir.clone();
+    tokio::spawn(async move {
+        match embeddings::EmbeddingEngine::new(&embed_data_dir).await {
+            Ok(engine) => {
+                *embed_state.embedder.write().await = Some(engine);
+                info!("Embedding engine loaded (background)");
+            }
+            Err(e) => {
+                warn!("Embedding engine unavailable: {} (search will use keywords only)", e);
+            }
+        }
+    });
 
     // Periodic stats reporting (every 10 minutes)
     let stats_state = state.clone();
@@ -199,6 +208,17 @@ async fn main() {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(600)).await;
             report_stats(&stats_state).await;
+        }
+    });
+
+    // Periodic database cleanup (every 6 hours)
+    let cleanup_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+            if let Some(ref db) = cleanup_state.db {
+                memory::decay_and_prune(db).await;
+            }
         }
     });
 
@@ -278,8 +298,7 @@ async fn handle(
             return Ok(json_resp(StatusCode::OK, "[]"));
         }
         if path.starts_with("/dashboard") {
-            let html = dashboard::render(&state.db, state.config.port).await;
-            return Ok(Response::builder().status(200).header("content-type", "text/html").body(full(html)).unwrap());
+            return Ok(Response::builder().status(200).header("content-type", "text/html").body(full(state.dashboard_html.clone())).unwrap());
         }
         if path.starts_with("/search") {
             let query = path.split("q=").nth(1)
@@ -289,9 +308,10 @@ async fn handle(
             let project = path.split("project=").nth(1)
                 .and_then(|p| p.split('&').next())
                 .map(|p| urlencoding_decode(p));
+            let embedder_guard = state.embedder.read().await;
             let results = search::search(
                 state.db.as_ref().unwrap_or(&state.db.clone().unwrap()),
-                state.embedder.as_ref(),
+                embedder_guard.as_ref(),
                 &query,
                 project.as_deref(),
                 20,
@@ -341,12 +361,6 @@ async fn handle(
         }
     };
 
-    // Debug: dump request bodies for comparison
-    let debug_dir = config::ProxyConfig::load().data_dir.join("debug");
-    let _ = std::fs::create_dir_all(&debug_dir);
-    let req_num = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-    let _ = std::fs::write(debug_dir.join(format!("{}-incoming.json", req_num)), &body_bytes);
-
     let mut parsed: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
     let model = parsed.as_ref()
         .and_then(|p| p["model"].as_str())
@@ -356,12 +370,14 @@ async fn handle(
 
     // ── Extract observations from tool_use blocks (non-blocking) ────────
     if let (Some(ref db), Some(ref body_val)) = (&state.db, &parsed) {
-        let db = db.clone();
-        let project = project_path.clone();
-        let body_clone = body_val.clone();
-        tokio::spawn(async move {
-            memory::extract_from_request(&db, &project, &body_clone).await;
-        });
+        let observations = memory::extract_observations(body_val);
+        if !observations.is_empty() {
+            let db = db.clone();
+            let project = project_path.clone();
+            tokio::spawn(async move {
+                memory::store_observations(&db, &project, observations).await;
+            });
+        }
     }
 
     // ── Route decision (before any body modification) ──────────────────
@@ -439,12 +455,6 @@ async fn handle(
     } else {
         body_bytes.clone()
     };
-
-    // Debug: dump outgoing body
-    let _ = std::fs::write(debug_dir.join(format!("{}-outgoing-{}.json", req_num, route.provider)), &final_body);
-
-    // ── Forward (serialized — prevents concurrent tool use issues) ─────
-    let _permit = state.request_lock.acquire().await.unwrap();
 
     let comp_orig = comp_stats.original_bytes as u64;
     let comp_final = comp_stats.compressed_bytes as u64;

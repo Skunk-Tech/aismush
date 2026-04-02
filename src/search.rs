@@ -4,7 +4,7 @@
 //! for the best of both worlds.
 
 use crate::db::Db;
-use crate::embeddings::{self, EmbeddingEngine};
+use crate::embeddings::EmbeddingEngine;
 use rusqlite::params;
 use tracing::debug;
 
@@ -81,11 +81,12 @@ async fn semantic_search(
         let conn = db.blocking_lock();
 
         // Load turn IDs + embeddings
+        // Limit candidates to most recent 500 turns to avoid loading unbounded embeddings into memory
         let candidates: Vec<(i64, Vec<u8>)> = {
             let sql = if project.is_some() {
-                "SELECT t.id, t.embedding FROM turns t JOIN conversations c ON t.conversation_id = c.id WHERE t.embedding IS NOT NULL AND c.project_path = ?1"
+                "SELECT t.id, t.embedding FROM turns t JOIN conversations c ON t.conversation_id = c.id WHERE t.embedding IS NOT NULL AND c.project_path = ?1 ORDER BY t.id DESC LIMIT 500"
             } else {
-                "SELECT id, embedding FROM turns WHERE embedding IS NOT NULL"
+                "SELECT id, embedding FROM turns WHERE embedding IS NOT NULL ORDER BY id DESC LIMIT 500"
             };
             let mut stmt = conn.prepare(sql).ok()?;
             if let Some(ref proj) = project {

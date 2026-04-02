@@ -7,8 +7,7 @@ use crate::db::Db;
 use crate::embeddings::{self, EmbeddingEngine};
 use rusqlite::params;
 use serde_json::Value;
-use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 /// Data for a single conversation turn.
 pub struct TurnData {
@@ -56,30 +55,6 @@ pub fn extract_user_message(body: &Value) -> Option<String> {
     }
 
     None
-}
-
-/// Assemble the assistant's response from SSE stream data.
-/// Extracts text from content_block_delta events.
-pub fn assemble_response(stream_data: &str) -> String {
-    let mut response = String::new();
-
-    for line in stream_data.lines() {
-        if let Some(json_str) = line.strip_prefix("data: ") {
-            if let Ok(event) = serde_json::from_str::<Value>(json_str) {
-                // content_block_delta with text
-                if event.get("type").and_then(|t| t.as_str()) == Some("content_block_delta") {
-                    if let Some(text) = event.get("delta")
-                        .and_then(|d| d.get("text"))
-                        .and_then(|t| t.as_str())
-                    {
-                        response.push_str(text);
-                    }
-                }
-            }
-        }
-    }
-
-    response
 }
 
 /// Extract tool invocations from the request body.
@@ -186,22 +161,8 @@ pub async fn store_turn(
     conversation_id: i64,
     turn: &TurnData,
 ) {
-    // Generate embedding (blocking — CPU bound)
+    // Generate embedding synchronously (CPU bound but fast ~10-20ms)
     let embed_text = format!("{} {}", turn.user_message, turn.assistant_message);
-    let embedding_blob = if let Some(engine) = embedder {
-        let text = embed_text.clone();
-        match tokio::task::spawn_blocking(move || {
-            // Can't move engine into blocking task, so we'll handle this differently
-            Ok::<_, String>(Vec::<u8>::new()) // Placeholder — see note below
-        }).await {
-            Ok(Ok(blob)) => Some(blob),
-            _ => None,
-        }
-    } else {
-        None
-    };
-
-    // For now, embed synchronously (will optimize later with Arc<EmbeddingEngine>)
     let embedding_blob = embedder.and_then(|e| {
         e.embed(&embed_text).ok().map(|v| embeddings::vec_to_blob(&v))
     });

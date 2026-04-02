@@ -3,6 +3,7 @@ use http_body_util::combinators::BoxBody;
 use hyper_util::client::legacy::Client;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 use crate::config::ProxyConfig;
 use crate::db::Db;
@@ -18,9 +19,8 @@ pub struct ProxyState {
     pub client: HttpClient,
     pub stats: Mutex<Stats>,
     pub db: Option<Db>,
-    pub embedder: Option<EmbeddingEngine>,
-    /// Serialize API requests to prevent concurrent tool use issues
-    pub request_lock: tokio::sync::Semaphore,
+    pub embedder: RwLock<Option<EmbeddingEngine>>,
+    pub dashboard_html: String,
 }
 
 #[derive(Default, Debug, serde::Serialize)]
@@ -37,14 +37,14 @@ pub struct Stats {
 }
 
 impl ProxyState {
-    pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>, embedder: Option<EmbeddingEngine>) -> Arc<Self> {
+    pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>, embedder: Option<EmbeddingEngine>, dashboard_html: String) -> Arc<Self> {
         Arc::new(Self {
             config,
             client,
             stats: Mutex::new(Stats::default()),
             db,
-            embedder,
-            request_lock: tokio::sync::Semaphore::new(1),
+            embedder: RwLock::new(embedder),
+            dashboard_html,
         })
     }
 }

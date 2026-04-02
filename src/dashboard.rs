@@ -1,16 +1,8 @@
 //! Rich HTML dashboard with live-updating stats, cost tracking,
 //! request history, memory viewer, and compression metrics.
 
-use crate::db::Db;
-
-/// Render the main dashboard page.
-pub async fn render(db: &Option<Db>, port: u16) -> String {
-    let stats_json = if let Some(ref database) = db {
-        crate::db::get_stats(database).await.to_string()
-    } else {
-        r#"{"total_requests":0}"#.to_string()
-    };
-
+/// Render the main dashboard page (called once at startup, result is cached).
+pub async fn render(port: u16) -> String {
     format!(r##"<!DOCTYPE html>
 <html lang="en">
 <head>

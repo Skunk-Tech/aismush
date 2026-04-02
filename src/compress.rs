@@ -370,10 +370,7 @@ fn smart_truncate_code(input: &str, max_chars: usize) -> String {
 
     if result.len() < lines.len() {
         let remaining = lines.len() - result.len();
-        result.push(&"");
-        let msg = format!("[... {} more lines, {} total]", remaining, lines.len());
-        // Can't push owned string to &str vec, so format inline
-        return format!("{}\n[... {} more lines, {} total]", result.join("\n"), remaining, lines.len());
+        return format!("{}\n\n[... {} more lines, {} total]", result.join("\n"), remaining, lines.len());
     }
 
     result.join("\n")

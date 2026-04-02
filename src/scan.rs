@@ -13,6 +13,7 @@ use crate::prompts;
 // ── Project scanning ────────────────────────────────────────────────────────
 
 /// Full project profile after filesystem scan.
+#[allow(dead_code)]
 pub struct ProjectProfile {
     pub root: PathBuf,
     pub files_by_extension: HashMap<String, Vec<String>>,
@@ -498,49 +499,7 @@ pub async fn run_pipeline(
     })
 }
 
-/// Build a fallback synthesis from raw agent outputs when the synthesis AI call fails.
-fn build_fallback_synthesis(agent_outputs: &[String], plan: &serde_json::Value) -> serde_json::Value {
-    let mut agents = Vec::new();
-
-    for output in agent_outputs {
-        // Parse "AGENT:name\n<content>" format
-        if let Some(rest) = output.strip_prefix("AGENT:") {
-            let mut parts = rest.splitn(2, '\n');
-            let name = parts.next().unwrap_or("unknown").trim();
-            let content = parts.next().unwrap_or("").trim();
-            if !content.is_empty() {
-                agents.push(serde_json::json!({
-                    "name": name,
-                    "content": content,
-                }));
-            }
-        }
-    }
-
-    // Convert planned skills to skill entries
-    let skills = plan.get("skills")
-        .and_then(|s| s.as_array())
-        .map(|arr| {
-            arr.iter().map(|s| {
-                let name = s["name"].as_str().unwrap_or("skill");
-                let desc = s["description"].as_str().unwrap_or("");
-                let cmds = s["commands"].as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("\n- "))
-                    .unwrap_or_default();
-                serde_json::json!({
-                    "name": name,
-                    "content": format!("---\nname: {}\ndescription: {}\n---\n\n## Commands\n- {}", name, desc, cmds),
-                })
-            }).collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    serde_json::json!({
-        "agents": agents,
-        "skills": skills,
-    })
-}
-
+#[allow(dead_code)]
 pub struct ScanResult {
     pub analysis: serde_json::Value,
     pub plan: serde_json::Value,
