@@ -231,7 +231,7 @@ a:hover { text-decoration: underline; }
 <!-- FEATURES -->
 <div class="container">
 <div class="features">
-  <h2>Six Weapons Against Token Waste</h2>
+  <h2>Seven Weapons Against Token Waste</h2>
 
   <!-- Feature 1: Agents -->
   <div class="feature-block">
@@ -246,6 +246,7 @@ a:hover { text-decoration: underline; }
         <li>Generates agents, skills, and CLAUDE.md</li>
         <li>Each agent assigned the cheapest model that can do the job</li>
         <li>Resumes where it left off if interrupted</li>
+        <li><strong>Incremental re-scans</strong> — only re-analyzes changed files (~$0.003)</li>
       </ul>
     </div>
     <div class="feature-visual">
@@ -267,12 +268,14 @@ a:hover { text-decoration: underline; }
   <div class="feature-block reverse">
     <div class="feature-content">
       <span class="tag tag-core">Core Feature</span>
-      <h3>Smart Model Routing</h3>
+      <h3>Smart Model Routing + Blast-Radius Analysis</h3>
       <p>AISmush automatically detects what kind of work each turn requires and routes it to the <strong>cheapest model that can handle it</strong>.</p>
       <p>Planning and architecture? Claude ($15/M). Reading files and making edits? DeepSeek ($0.27/M). That's a <strong>55x cost difference</strong> on the turns that matter most.</p>
       <ul>
         <li>Zero latency overhead — pure heuristic routing</li>
         <li>Claude for reasoning, DeepSeek for execution</li>
+        <li><strong>Blast-radius aware</strong> — parses imports to know which files are critical</li>
+        <li>Editing a shared type? Claude. Editing a leaf file? DeepSeek.</li>
         <li>Automatic failover between providers</li>
         <li>Error recovery detection (3+ errors → Claude)</li>
       </ul>
@@ -289,34 +292,36 @@ a:hover { text-decoration: underline; }
     </div>
   </div>
 
-  <!-- Feature 3: Compression -->
+  <!-- Feature 3: Structural Summarization -->
   <div class="feature-block">
     <div class="feature-content">
-      <span class="tag tag-core">Token Saver</span>
-      <h3>Context Compression</h3>
-      <p>Every tool result passes through our compression engine before reaching the AI. We strip what the AI doesn't need while keeping what it does.</p>
-      <p><strong>Content-type aware</strong> — we know the difference between code (strip comments), JSON (never touch), and logs (deduplicate aggressively). Inspired by <a href="https://github.com/rtk-ai/rtk">RTK's</a> approach.</p>
+      <span class="tag tag-new">Biggest Token Saver</span>
+      <h3>Structural Summarization — 3-5x Fewer Tokens</h3>
+      <p>The biggest single improvement to token usage. Older tool results in your conversation get replaced with <strong>compact structural summaries</strong> — just function signatures, type definitions, and imports.</p>
+      <p>Your last 4 messages stay fully intact. Only older code results get summarized. JSON, YAML, and error results are never touched.</p>
       <ul>
-        <li>20-50% fewer tokens on code results</li>
-        <li>Never corrupts JSON, YAML, or data formats</li>
-        <li>Smart truncation preserves function signatures</li>
-        <li>Aggressive log deduplication</li>
+        <li>200-line file becomes ~30 lines (3-5x reduction)</li>
+        <li>Saves thousands of tokens per request in long sessions</li>
+        <li>Content-type aware — only summarizes code, never data</li>
+        <li>Supports Rust, TypeScript, Python, Go, and more</li>
+        <li>Combined with standard compression: 60-80% total reduction</li>
       </ul>
     </div>
     <div class="feature-visual">
-      <span class="comment"># Before compression (2,400 tokens):</span><br>
-      <span style="color:#666">// Helper function for auth<br>
-      // TODO: refactor this later<br>
-      /* Old implementation<br>
-      &nbsp;&nbsp; removed in v2 */<br></span>
-      fn validate(token: &str) {<br>
-      &nbsp;&nbsp;&nbsp;&nbsp;...<br>
-      }<br><br>
-      <span class="comment"># After compression (1,200 tokens):</span><br>
-      fn validate(token: &str) {<br>
-      &nbsp;&nbsp;&nbsp;&nbsp;...<br>
-      }<br><br>
-      <span class="highlight">50% saved. Zero information lost.</span>
+      <span class="comment"># Old message tool_result (6,000 tokens):</span><br>
+      use std::collections::HashMap;<br>
+      use crate::db::Db;<br>
+      <span style="color:#666">// ... 180 lines of implementation ...<br>
+      // comments, function bodies, tests ...<br></span><br>
+      <span class="comment"># After structural summary (1,200 tokens):</span><br>
+      <span class="purple">[Structural summary (200 lines -> 28 lines)]</span><br>
+      use std::collections::HashMap;<br>
+      use crate::db::Db;<br>
+      pub struct ProxyState <span class="cmd">{ ... }</span><br>
+      impl ProxyState <span class="cmd">{ ... }</span><br>
+      pub async fn handle() -> Response <span class="cmd">{ ... }</span><br>
+      fn compress_text() -> String <span class="cmd">{ ... }</span><br><br>
+      <span class="highlight">5x reduction. API surface preserved.</span>
     </div>
   </div>
 
@@ -329,11 +334,11 @@ a:hover { text-decoration: underline; }
       <p>Other tools remember tool names. AISmush captures <strong>entire conversations</strong> — your questions, the AI's answers, the reasoning, the decisions. Searchable by meaning, not just keywords.</p>
       <ul>
         <li>Full conversation capture (not just tool names)</li>
-        <li>Local semantic search — MiniLM-L6-v2, ~10ms, no cloud</li>
-        <li>"auth bug" finds conversations about "JWT validation"</li>
+        <li>Keyword search always on (FTS5, zero overhead)</li>
+        <li>Semantic search opt-in (<code>--embeddings</code>) — finds "JWT validation" when you search "auth bug"</li>
         <li>Search via dashboard, CLI, or API</li>
         <li>Auto-injects relevant past context into new sessions</li>
-        <li>Configurable retention (30 days default, or forever)</li>
+        <li>Lightweight by default — no 90MB model unless you want it</li>
       </ul>
     </div>
     <div class="feature-visual">
@@ -414,7 +419,7 @@ a:hover { text-decoration: underline; }
     <div class="flow-step">
       <div class="num">1</div>
       <h4>Install</h4>
-      <p>One command. 3.6MB binary. No dependencies.</p>
+      <p>One command. ~15MB RAM. Won't slow your machine.</p>
     </div>
     <div class="flow-step">
       <div class="num">2</div>

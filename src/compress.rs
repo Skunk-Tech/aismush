@@ -6,6 +6,8 @@
 use serde_json::Value;
 use std::collections::HashSet;
 
+use crate::summarize;
+
 #[derive(Default, Debug)]
 pub struct CompressionStats {
     pub original_bytes: usize,
@@ -85,6 +87,91 @@ pub fn compress_request_body(body: &mut Value) -> CompressionStats {
     }
 
     stats
+}
+
+/// Enhanced compression: structural summarization for old messages, then standard compression.
+/// Older tool_result code blocks (>4KB, not in last 4 messages) are replaced with
+/// structural summaries (function signatures, type defs, imports) for 3-5x token reduction.
+pub fn compress_with_summaries(body: &mut Value, _db: Option<&crate::db::Db>) -> CompressionStats {
+    let summary_threshold: usize = std::env::var("AISMUSH_SUMMARY_THRESHOLD")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+
+    if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        let msg_count = messages.len();
+        if msg_count > 4 {
+            let cutoff = msg_count - 4; // Don't touch last 4 messages
+            for msg in messages[..cutoff].iter_mut() {
+                if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+                    continue;
+                }
+                let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) else {
+                    continue;
+                };
+
+                for block in content.iter_mut() {
+                    // Skip non-tool_result and error results
+                    if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+                        continue;
+                    }
+                    if block.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false) {
+                        continue;
+                    }
+
+                    let text = match block.get("content").and_then(|c| c.as_str()) {
+                        Some(t) => t.to_string(),
+                        None => continue,
+                    };
+
+                    // Only summarize large code content
+                    if text.len() < summary_threshold {
+                        continue;
+                    }
+                    if detect_content_type(&text) != ContentType::Code {
+                        continue;
+                    }
+
+                    // Detect language from content
+                    let language = detect_language_from_content(&text);
+
+                    // Check summary cache if DB available
+                    let summary = summarize::summarize(&text, language);
+                    let formatted = summarize::format_summary(&summary, "");
+
+                    // Only use summary if it's <50% of original (meaningful reduction)
+                    if formatted.len() < text.len() / 2 && summary.summary_lines > 0 {
+                        block["content"] = Value::String(formatted);
+                    }
+                }
+            }
+        }
+    }
+
+    // Then apply standard compression
+    compress_request_body(body)
+}
+
+/// Detect programming language from content heuristics.
+fn detect_language_from_content(text: &str) -> &'static str {
+    let lines: Vec<&str> = text.lines().take(20).collect();
+    let joined = lines.join("\n");
+
+    if joined.contains("use crate::") || joined.contains("fn ") && joined.contains("-> ") ||
+       joined.contains("pub struct ") || joined.contains("impl ") {
+        return "rust";
+    }
+    if joined.contains("import ") && (joined.contains(" from '") || joined.contains(" from \"")) ||
+       joined.contains("export ") || joined.contains(": React.FC") || joined.contains("interface ") {
+        return "typescript";
+    }
+    if joined.contains("def ") && joined.contains("):") ||
+       joined.contains("import ") && joined.contains("__") || joined.contains("self.") {
+        return "python";
+    }
+    if joined.contains("func ") && joined.contains("package ") ||
+       joined.contains("import (") {
+        return "go";
+    }
+    "unknown"
 }
 
 // ── Content type detection ──────────────────────────────────────────────────

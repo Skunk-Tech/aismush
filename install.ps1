@@ -1,12 +1,61 @@
-# AISmush Installer for Windows
-# Usage: irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 | iex
+# AISmush Installer / Uninstaller for Windows
+# Install:    irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 | iex
+# Uninstall:  aismush --uninstall
+#   or:       & { irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 | iex } --uninstall
 $ErrorActionPreference = "Stop"
 
 $Repo = "Skunk-Tech/aismush"
 $Artifact = "aismush-windows-x86_64"
 $InstallDir = "$env:LOCALAPPDATA\AISmush"
 $Binary = "$InstallDir\aismush.exe"
+$DataDir = "$env:USERPROFILE\.hybrid-proxy"
 
+# ── Uninstall ──────────────────────────────────────────────────────────
+if ($args -contains "--uninstall") {
+    Write-Host ""
+    Write-Host "  AISmush Uninstaller" -ForegroundColor Cyan
+    Write-Host "  -------------------"
+    Write-Host ""
+
+    # Kill running proxy
+    Get-Process -Name "aismush" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+    $removed = $false
+    if (Test-Path $InstallDir) {
+        Remove-Item -Recurse -Force $InstallDir
+        Write-Host "  Removed: $InstallDir" -ForegroundColor Green
+        $removed = $true
+    }
+
+    if (-not $removed) {
+        Write-Host "  AISmush not found in $InstallDir"
+    }
+
+    # Remove from PATH
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($UserPath -like "*$InstallDir*") {
+        $NewPath = ($UserPath -split ";" | Where-Object { $_ -ne $InstallDir }) -join ";"
+        [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
+        Write-Host "  Removed from PATH" -ForegroundColor Green
+    }
+
+    if (Test-Path $DataDir) {
+        $confirm = Read-Host "  Delete data ($DataDir)? Includes database and memories. [y/N]"
+        if ($confirm -eq "y" -or $confirm -eq "Y") {
+            Remove-Item -Recurse -Force $DataDir
+            Write-Host "  Removed: $DataDir" -ForegroundColor Green
+        } else {
+            Write-Host "  Kept: $DataDir"
+        }
+    }
+
+    Write-Host ""
+    Write-Host "  AISmush uninstalled." -ForegroundColor Green
+    Write-Host ""
+    exit
+}
+
+# ── Install ────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "  AISmush Installer" -ForegroundColor Cyan
 Write-Host "  -----------------"

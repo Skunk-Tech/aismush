@@ -143,6 +143,54 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         ")?;
     }
 
+    if version < 3 {
+        info!("Running migration v3: file_hashes + dependencies + blast_radius + structural_summaries");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS file_hashes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_path TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                language TEXT DEFAULT '',
+                last_scanned INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                UNIQUE(project_path, file_path)
+            );
+
+            CREATE TABLE IF NOT EXISTS file_dependencies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_path TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                target_file TEXT NOT NULL,
+                UNIQUE(project_path, source_file, target_file)
+            );
+
+            CREATE TABLE IF NOT EXISTS blast_radius_cache (
+                project_path TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                direct_importers INTEGER DEFAULT 0,
+                transitive_importers INTEGER DEFAULT 0,
+                score REAL DEFAULT 0.0,
+                computed_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                PRIMARY KEY(project_path, file_path)
+            );
+
+            CREATE TABLE IF NOT EXISTS structural_summaries (
+                content_hash TEXT PRIMARY KEY,
+                file_path TEXT DEFAULT '',
+                summary TEXT NOT NULL,
+                original_lines INTEGER,
+                summary_lines INTEGER,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_file_hashes_project ON file_hashes(project_path);
+            CREATE INDEX IF NOT EXISTS idx_deps_target ON file_dependencies(project_path, target_file);
+
+            INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3');
+        ")?;
+    }
+
     Ok(())
 }
 

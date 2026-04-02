@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "aismush"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -41,6 +41,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "ndarray 0.15.6",
+ "ring",
  "rusqlite",
  "rustls",
  "serde",

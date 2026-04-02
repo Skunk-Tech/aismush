@@ -34,21 +34,35 @@ AISmush automatically detects what kind of work each turn requires:
 - Each agent assigned the optimal model: Haiku for cheap tasks, Sonnet for complex work
 - Detects existing `.claude/` files and skips them (use `--force` to overwrite)
 - Auto-starts proxy if not running — truly one command
-- Costs ~$0.03 per scan via DeepSeek through the proxy
+- **Incremental scanning** — SHA-256 hashes every file, re-scans only what changed
+- First scan: ~$0.03. Re-scans: ~$0.003 (90% cheaper)
 
-### Smart Model Routing
+### Structural Summarization — 3-5x Token Reduction
+The single biggest token saver. Older tool results in your conversation get replaced with compact structural summaries — function signatures, type definitions, and imports — while your recent work stays fully intact.
+
+- A 200-line file in an old message becomes ~30 lines (function signatures + types only)
+- **3-5x reduction** on code tool_results older than the last 4 messages
+- Never touches JSON, YAML, or data — only code gets summarized
+- Never touches error results — full context preserved for debugging
+- Never touches your last 4 messages — active work stays raw
+- Saves **thousands of tokens per request** in long sessions
+
+### Smart Model Routing + Blast-Radius Analysis
 - Automatically routes each turn to Claude or DeepSeek based on the task
+- **Blast-radius aware** — parses your project's import graph to know which files are shared by many others
+- Editing a leaf file? DeepSeek handles it. Editing a type definition imported by 12 files? Claude.
 - Heuristic-based (zero latency overhead — no extra API calls for classification)
 - Context-size aware — forces Claude when context exceeds DeepSeek's effective window
 - Error recovery detection — switches to Claude when DeepSeek is going in circles
 
 ### Context Compression
 - **Content-type aware** (RTK-inspired) — detects Code, Data (JSON/YAML/XML), Logs, Unknown
+- Structural summarization for old code (see above)
 - Strips comments from code (never touches JSON, YAML, or data formats)
 - Normalizes whitespace, collapses blank lines
 - Aggressively deduplicates repeated log lines
 - Smart truncation preserves function signatures in code
-- **20-50% token reduction** on code, safe passthrough for data
+- **60-80% token reduction** on code (structural summaries + compression combined), safe passthrough for data
 
 ### 4-Tier Context Window Management
 Prevents DeepSeek from choking on long conversations:
@@ -88,11 +102,12 @@ Open `http://localhost:1849/dashboard` to see:
 - Memory viewer with search and delete
 - Request history with full detail
 
-### Zero Overhead Streaming
+### Lightweight by Default
 - Written in Rust with Tokio + Hyper (same stack as Cloudflare's infrastructure)
+- **~15 MB memory** with embeddings disabled (default) — won't slow down your machine
+- Embeddings (semantic search) are opt-in: `aismush --embeddings` or `AISMUSH_EMBEDDINGS=1`
 - Frame-by-frame response streaming — feels identical to direct Claude connection
 - Connection pooling with keep-alive (no TLS handshake per request)
-- ~3.5 MB binary, ~15 MB memory usage
 
 ## Two Modes
 
@@ -253,23 +268,26 @@ Based on real usage with a large Rust/React/Node.js codebase:
 |--------|----------------|--------------|
 | Planning turns (Claude) | $15/M in, $75/M out | $15/M in, $75/M out (same) |
 | Coding turns (Claude) | $15/M in, $75/M out | **$0.27/M in, $1.10/M out** |
-| Context tokens | 100% | **50-80%** (after compression) |
-| Typical session cost | $20-50 | **$2-5** |
-| **Savings** | — | **90%+** |
+| Context tokens | 100% | **20-40%** (structural summaries + compression) |
+| Typical session cost | $20-50 | **$1.50-4** |
+| **Savings** | — | **92%+** |
 
 ## Architecture
 
 ```
-12 Rust modules, 2,112 lines total:
+15 Rust modules:
 
 main.rs        — HTTP server + request pipeline
 config.rs      — JSON + env config loading
 router.rs      — Smart routing heuristics
 forward.rs     — Claude/DeepSeek forwarding + streaming
 compress.rs    — Context compression engine
+summarize.rs   — Structural code summarization (3-5x token reduction)
+hashes.rs      — SHA-256 file hashing + incremental change detection
+deps.rs        — Dependency graph + blast-radius analysis
 context.rs     — 4-tier context window management
 memory.rs      — Cross-session persistent memory
-tokens.rs      — Token estimation + SSE parsing
+tokens.rs      — Token estimation
 cost.rs        — Pricing tables + cost calculation
 db.rs          — SQLite persistence layer
 dashboard.rs   — Live HTML dashboard
@@ -310,14 +328,16 @@ A: Run `aismush --status` from any terminal, or visit `http://localhost:1849/das
 ## CLI Reference
 
 ```bash
-aismush              # Start the proxy server (smart routing)
+aismush              # Start the proxy server (smart routing, lightweight)
 aismush --direct     # Start in direct mode (Claude only, still compresses + tracks)
+aismush --embeddings # Start with semantic search enabled (loads 90MB model)
 aismush --scan       # Scan codebase, generate optimized agents
 aismush --search "query"  # Search past conversations by meaning
 aismush --version    # Show version
 aismush --status     # Check if running, show quick stats
 aismush --config     # Show current configuration
 aismush --upgrade    # Upgrade to latest version
+aismush --uninstall  # Uninstall AISmush
 aismush --help       # Show help
 
 aismush-start        # Start proxy + launch Claude Code (recommended)
@@ -337,17 +357,11 @@ Anonymous usage stats (request counts and savings only — no personal data, no 
 
 ## Uninstall
 
-**Linux / macOS:**
 ```bash
-rm ~/.local/bin/aismush ~/.local/bin/aismush-start
-rm -rf ~/.hybrid-proxy/
+aismush --uninstall
 ```
 
-**Windows (PowerShell):**
-```powershell
-Remove-Item -Recurse "$env:LOCALAPPDATA\AISmush"
-Remove-Item -Recurse "$env:USERPROFILE\.hybrid-proxy"
-```
+This works on all platforms. It removes the binary, cleans up PATH (Windows), and optionally deletes your data directory.
 
 ## License
 

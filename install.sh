@@ -1,13 +1,59 @@
 #!/usr/bin/env bash
 set -e
 
-# AISmush Installer
-# Detects OS/arch, downloads the right binary, installs to ~/.local/bin/
+# AISmush Installer / Uninstaller
+# Install:    curl -fsSL .../install.sh | bash
+# Uninstall:  curl -fsSL .../install.sh | bash -s -- --uninstall
+#   or:       aismush --uninstall
 
 VERSION="${AISMUSH_VERSION:-latest}"
 INSTALL_DIR="${AISMUSH_INSTALL_DIR:-$HOME/.local/bin}"
 REPO="Skunk-Tech/aismush"
+DATA_DIR="$HOME/.hybrid-proxy"
 
+# ── Uninstall ──────────────────────────────────────────────────────────
+if [ "$1" = "--uninstall" ]; then
+    echo ""
+    echo "  AISmush Uninstaller"
+    echo "  ───────────────────"
+    echo ""
+
+    # Kill running proxy
+    if command -v lsof &>/dev/null; then
+        lsof -ti:1849 2>/dev/null | xargs kill 2>/dev/null || true
+    fi
+
+    removed=0
+    for f in "$INSTALL_DIR/aismush" "$INSTALL_DIR/aismush-start"; do
+        if [ -f "$f" ]; then
+            rm -f "$f"
+            echo "  Removed: $f"
+            removed=1
+        fi
+    done
+
+    if [ $removed -eq 0 ]; then
+        echo "  AISmush binaries not found in $INSTALL_DIR"
+    fi
+
+    if [ -d "$DATA_DIR" ]; then
+        echo ""
+        read -p "  Delete data ($DATA_DIR)? Includes database and memories. [y/N]: " confirm
+        if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+            rm -rf "$DATA_DIR"
+            echo "  Removed: $DATA_DIR"
+        else
+            echo "  Kept: $DATA_DIR"
+        fi
+    fi
+
+    echo ""
+    echo "  AISmush uninstalled."
+    echo ""
+    exit 0
+fi
+
+# ── Install ────────────────────────────────────────────────────────────
 echo ""
 echo "  AISmush Installer"
 echo "  ─────────────────"

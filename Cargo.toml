@@ -1,6 +1,6 @@
 [package]
 name = "aismush"
-version = "0.5.7"
+version = "0.5.8"
 edition = "2021"
 
 [dependencies]
@@ -20,6 +20,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 tract-onnx = "0.21"
 ndarray = "0.15"
 tokenizers = "0.21"
+ring = "0.17"
 
 [profile.release]
 opt-level = 3

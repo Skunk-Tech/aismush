@@ -163,8 +163,8 @@ pub async fn claude(
             tokio::spawn(async move {
                 let mut total_bytes = 0u64;
                 let mut usage = tokens::TokenUsage::default();
-                let mut assistant_text = String::new();
-                let mut sse_buf = String::new();
+                let mut assistant_text = String::with_capacity(4096);
+                let mut sse_buf = String::with_capacity(16384);
                 let mut stream = body_stream;
                 loop {
                     match stream.frame().await {
@@ -323,8 +323,8 @@ pub async fn deepseek(
             tokio::spawn(async move {
                 let mut total_bytes = 0u64;
                 let mut usage = tokens::TokenUsage::default();
-                let mut assistant_text = String::new();
-                let mut sse_buf = String::new();
+                let mut assistant_text = String::with_capacity(4096);
+                let mut sse_buf = String::with_capacity(16384);
                 let mut stream = body_stream;
                 loop {
                     match stream.frame().await {

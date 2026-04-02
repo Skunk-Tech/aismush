@@ -30,7 +30,7 @@ pub struct ExistingArtifacts {
     pub has_claude_md: bool,
 }
 
-const IGNORE_DIRS: &[&str] = &[
+pub const IGNORE_DIRS: &[&str] = &[
     "node_modules", ".git", "target", "dist", "build", "__pycache__",
     ".next", ".nuxt", "vendor", "venv", ".venv", "env", ".env",
     ".claude", ".roo", "coverage", ".mypy_cache", ".pytest_cache",

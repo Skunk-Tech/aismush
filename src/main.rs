@@ -5,14 +5,17 @@ mod context;
 mod cost;
 mod dashboard;
 mod db;
+mod deps;
 mod embeddings;
 mod forward;
+mod hashes;
 mod memory;
 mod prompts;
 mod router;
 mod scan;
 mod search;
 mod state;
+mod summarize;
 mod tokens;
 
 use bytes::Bytes;
@@ -62,7 +65,9 @@ async fn main() {
         println!("  aismush --version    Show version");
         println!("  aismush --status     Check if proxy is running");
         println!("  aismush --config     Show current configuration");
+        println!("  aismush --embeddings Start with semantic search enabled (loads 90MB model)");
         println!("  aismush --upgrade    Upgrade to latest version");
+        println!("  aismush --uninstall  Uninstall AISmush");
         println!();
         println!("The proxy reads config from:");
         println!("  1. Environment variables (DEEPSEEK_API_KEY, PROXY_PORT)");
@@ -102,6 +107,10 @@ async fn main() {
     }
     if args.iter().any(|a| a == "--upgrade") {
         upgrade().await;
+        return;
+    }
+    if args.iter().any(|a| a == "--uninstall") {
+        uninstall().await;
         return;
     }
     if args.iter().any(|a| a == "--search") {
@@ -187,20 +196,28 @@ async fn main() {
     info!(port = cfg.port, "Listening");
     info!("Dashboard: http://127.0.0.1:{}/dashboard", cfg.port);
 
-    // Initialize embedding engine in background so it doesn't block startup
-    let embed_state = state.clone();
-    let embed_data_dir = cfg.data_dir.clone();
-    tokio::spawn(async move {
-        match embeddings::EmbeddingEngine::new(&embed_data_dir).await {
-            Ok(engine) => {
-                *embed_state.embedder.write().await = Some(engine);
-                info!("Embedding engine loaded (background)");
+    // Embeddings are opt-in (--embeddings flag or AISMUSH_EMBEDDINGS=1)
+    // The 90MB model uses significant CPU/RAM — only load when user explicitly wants semantic search
+    let embeddings_enabled = args.iter().any(|a| a == "--embeddings")
+        || std::env::var("AISMUSH_EMBEDDINGS").unwrap_or_default() == "1";
+
+    if embeddings_enabled {
+        let embed_state = state.clone();
+        let embed_data_dir = cfg.data_dir.clone();
+        tokio::spawn(async move {
+            match embeddings::EmbeddingEngine::new(&embed_data_dir).await {
+                Ok(engine) => {
+                    *embed_state.embedder.write().await = Some(engine);
+                    info!("Embedding engine loaded (background)");
+                }
+                Err(e) => {
+                    warn!("Embedding engine unavailable: {} (search will use keywords only)", e);
+                }
             }
-            Err(e) => {
-                warn!("Embedding engine unavailable: {} (search will use keywords only)", e);
-            }
-        }
-    });
+        });
+    } else {
+        info!("Embeddings disabled (use --embeddings or AISMUSH_EMBEDDINGS=1 to enable semantic search)");
+    }
 
     // Periodic stats reporting (every 10 minutes)
     let stats_state = state.clone();
@@ -267,6 +284,32 @@ async fn main() {
             }
         }
     }
+}
+
+/// Extract the maximum blast radius score from file paths in the last message's tool_use inputs.
+async fn extract_blast_radius_score(db: &db::Db, project_path: &str, body: &serde_json::Value) -> Option<f64> {
+    let messages = body.get("messages")?.as_array()?;
+    let last = messages.last()?;
+    let content = last.get("content")?.as_array()?;
+
+    let mut max_score: Option<f64> = None;
+
+    for block in content {
+        // Look at tool_use inputs for file_path fields
+        if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+            if let Some(input) = block.get("input") {
+                if let Some(path) = input.get("file_path").and_then(|p| p.as_str()) {
+                    // Normalize: strip leading ./ or project path prefix
+                    let rel_path = path.trim_start_matches("./");
+                    if let Some(br) = deps::lookup_blast_radius(db, project_path, rel_path).await {
+                        max_score = Some(max_score.unwrap_or(0.0).max(br.score));
+                    }
+                }
+            }
+        }
+    }
+
+    max_score
 }
 
 async fn handle(
@@ -381,12 +424,31 @@ async fn handle(
     }
 
     // ── Route decision (before any body modification) ──────────────────
-    let route_preview = router::decide(&parsed, &state.config.force_provider);
+    let mut route_preview = router::decide(&parsed, &state.config.force_provider);
+
+    // ── Blast radius check — override routing for high-impact files ────
+    if route_preview.provider == "deepseek" {
+        if let (Some(ref db), Some(ref body_val)) = (&state.db, &parsed) {
+            let blast_score = extract_blast_radius_score(db, &project_path, body_val).await;
+            let threshold: f64 = std::env::var("AISMUSH_BLAST_THRESHOLD")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(0.7);
+            if let Some(score) = blast_score {
+                if score > threshold {
+                    route_preview = router::RouteDecision {
+                        provider: "claude",
+                        reason: "high-blast-radius",
+                        estimated_tokens: route_preview.estimated_tokens,
+                    };
+                    info!(score = format!("{:.2}", score), "Blast radius override → Claude");
+                }
+            }
+        }
+    }
 
     // ── Compress tool_result blocks (DeepSeek only — Claude gets original bytes) ──
     let comp_stats = if route_preview.provider == "deepseek" {
         if let Some(ref mut body_val) = parsed {
-            compress::compress_request_body(body_val)
+            compress::compress_with_summaries(body_val, state.db.as_ref())
         } else {
             compress::CompressionStats::default()
         }
@@ -801,6 +863,43 @@ async fn upgrade() {
             eprintln!("Try manually: curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh | bash");
             #[cfg(windows)]
             eprintln!("Try manually: irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 | iex");
+        }
+    }
+}
+
+/// Uninstall by delegating to the install script with --uninstall flag.
+async fn uninstall() {
+    println!("AISmush v{} — uninstalling...", VERSION);
+    println!();
+
+    #[cfg(unix)]
+    let status = tokio::process::Command::new("bash")
+        .arg("-c")
+        .arg("curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh | bash -s -- --uninstall")
+        .status()
+        .await;
+
+    #[cfg(windows)]
+    let status = tokio::process::Command::new("powershell")
+        .args(["-ExecutionPolicy", "Bypass", "-Command",
+            "& { irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 -OutFile $env:TEMP\\aismush-uninstall.ps1; & $env:TEMP\\aismush-uninstall.ps1 --uninstall }"])
+        .status()
+        .await;
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(_) | Err(_) => {
+            eprintln!("Automatic uninstall failed. To uninstall manually:");
+            #[cfg(unix)]
+            {
+                eprintln!("  rm ~/.local/bin/aismush ~/.local/bin/aismush-start");
+                eprintln!("  rm -rf ~/.hybrid-proxy/");
+            }
+            #[cfg(windows)]
+            {
+                eprintln!("  Remove-Item -Recurse \"$env:LOCALAPPDATA\\AISmush\"");
+                eprintln!("  Remove-Item -Recurse \"$env:USERPROFILE\\.hybrid-proxy\"");
+            }
         }
     }
 }
