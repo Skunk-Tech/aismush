@@ -90,6 +90,59 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         ")?;
     }
 
+    if version < 2 {
+        info!("Running migration v2: conversations + turns + tool_invocations + FTS5");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                project_path TEXT NOT NULL,
+                started_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                ended_at INTEGER,
+                turn_count INTEGER DEFAULT 0,
+                summary TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER REFERENCES conversations(id),
+                turn_number INTEGER,
+                timestamp INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                user_message TEXT,
+                assistant_message TEXT,
+                provider TEXT,
+                model TEXT,
+                route_reason TEXT,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                latency_ms INTEGER DEFAULT 0,
+                cost REAL DEFAULT 0,
+                embedding BLOB
+            );
+
+            CREATE TABLE IF NOT EXISTS tool_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                turn_id INTEGER REFERENCES turns(id),
+                tool_name TEXT NOT NULL,
+                tool_input TEXT,
+                is_error INTEGER DEFAULT 0
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
+                user_message, assistant_message,
+                content=turns, content_rowid=id
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_path);
+            CREATE INDEX IF NOT EXISTS idx_turns_conversation ON turns(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_tool_invocations_turn ON tool_invocations(turn_id);
+            CREATE INDEX IF NOT EXISTS idx_tool_invocations_name ON tool_invocations(tool_name);
+
+            INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2');
+        ")?;
+    }
+
     Ok(())
 }
 

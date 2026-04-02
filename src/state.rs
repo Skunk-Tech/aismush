@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::config::ProxyConfig;
 use crate::db::Db;
+use crate::embeddings::EmbeddingEngine;
 
 pub type HttpClient = Client<
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
@@ -17,6 +18,7 @@ pub struct ProxyState {
     pub client: HttpClient,
     pub stats: Mutex<Stats>,
     pub db: Option<Db>,
+    pub embedder: Option<EmbeddingEngine>,
     /// Serialize API requests to prevent concurrent tool use issues
     pub request_lock: tokio::sync::Semaphore,
 }
@@ -35,13 +37,14 @@ pub struct Stats {
 }
 
 impl ProxyState {
-    pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>) -> Arc<Self> {
+    pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>, embedder: Option<EmbeddingEngine>) -> Arc<Self> {
         Arc::new(Self {
             config,
             client,
             stats: Mutex::new(Stats::default()),
             db,
-            request_lock: tokio::sync::Semaphore::new(1), // One request at a time
+            embedder,
+            request_lock: tokio::sync::Semaphore::new(1),
         })
     }
 }

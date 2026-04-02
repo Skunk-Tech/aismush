@@ -1,14 +1,17 @@
+mod capture;
 mod compress;
 mod config;
 mod context;
 mod cost;
 mod dashboard;
 mod db;
+mod embeddings;
 mod forward;
 mod memory;
 mod prompts;
 mod router;
 mod scan;
+mod search;
 mod state;
 mod tokens;
 
@@ -101,6 +104,10 @@ async fn main() {
         upgrade().await;
         return;
     }
+    if args.iter().any(|a| a == "--search") {
+        run_search(&args).await;
+        return;
+    }
     if args.iter().any(|a| a == "--scan") {
         run_scan(&args).await;
         return;
@@ -165,12 +172,21 @@ async fn main() {
         .pool_max_idle_per_host(10)
         .build(https);
 
+    // Initialize embedding engine for semantic search
+    let embedder = match embeddings::EmbeddingEngine::new(&cfg.data_dir).await {
+        Ok(engine) => Some(engine),
+        Err(e) => {
+            warn!("Embedding engine unavailable: {} (search will use keywords only)", e);
+            None
+        }
+    };
+
     // Decay old memory scores on startup
     if let Some(ref db) = database {
         memory::decay_scores(db).await;
     }
 
-    let state = ProxyState::new(cfg.clone(), client, database);
+    let state = ProxyState::new(cfg.clone(), client, database, embedder);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));
     let listener = TcpListener::bind(addr).await.expect("Failed to bind port");
@@ -264,6 +280,31 @@ async fn handle(
         if path.starts_with("/dashboard") {
             let html = dashboard::render(&state.db, state.config.port).await;
             return Ok(Response::builder().status(200).header("content-type", "text/html").body(full(html)).unwrap());
+        }
+        if path.starts_with("/search") {
+            let query = path.split("q=").nth(1)
+                .and_then(|q| q.split('&').next())
+                .map(|q| urlencoding_decode(q))
+                .unwrap_or_default();
+            let project = path.split("project=").nth(1)
+                .and_then(|p| p.split('&').next())
+                .map(|p| urlencoding_decode(p));
+            let results = search::search(
+                state.db.as_ref().unwrap_or(&state.db.clone().unwrap()),
+                state.embedder.as_ref(),
+                &query,
+                project.as_deref(),
+                20,
+            ).await;
+            return Ok(json_resp(StatusCode::OK, &serde_json::to_string(&results).unwrap()));
+        }
+        if path.starts_with("/conversation/") {
+            let id: i64 = path.trim_start_matches("/conversation/").parse().unwrap_or(0);
+            if let Some(ref db) = state.db {
+                let turns = search::get_conversation(db, id).await;
+                return Ok(json_resp(StatusCode::OK, &serde_json::to_string(&turns).unwrap()));
+            }
+            return Ok(json_resp(StatusCode::OK, "[]"));
         }
         if path.starts_with("/memories") {
             if let Some(ref database) = state.db {
@@ -409,7 +450,7 @@ async fn handle(
     let comp_final = comp_stats.compressed_bytes as u64;
 
     if route.provider == "claude" {
-        forward::claude(&parts, &final_body, &path, &model, route.reason, &project_path, comp_orig, comp_final, &state).await
+        forward::claude(&parts, &final_body, &path, &model, route.reason, &project_path, comp_orig, comp_final, parsed.as_ref(), &state).await
     } else {
         forward::deepseek(&final_body, &path, &parsed, "deepseek-chat", route.reason, &project_path, comp_orig, comp_final, &state).await
     }
@@ -534,6 +575,77 @@ async fn report_stats(state: &Arc<ProxyState>) {
 }
 
 /// Scan a project and generate optimized Claude Code agents via AI analysis.
+fn urlencoding_decode(s: &str) -> String {
+    s.replace('+', " ").replace("%20", " ").replace("%2F", "/")
+}
+
+/// Search past conversations from CLI.
+async fn run_search(args: &[String]) {
+    let query = args.iter()
+        .position(|a| a == "--search")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str())
+        .unwrap_or("");
+
+    if query.is_empty() {
+        eprintln!("Usage: aismush --search \"your query\"");
+        return;
+    }
+
+    let cfg = config::ProxyConfig::load();
+
+    // Open DB
+    let db = match db::open(&cfg.db_path) {
+        Ok(d) => d,
+        Err(e) => { eprintln!("Database error: {}", e); return; }
+    };
+
+    // Try to load embedder
+    let embedder = match embeddings::EmbeddingEngine::new(&cfg.data_dir).await {
+        Ok(e) => Some(e),
+        Err(_) => None,
+    };
+
+    let results = search::search(&db, embedder.as_ref(), query, None, 10).await;
+
+    if results.is_empty() {
+        eprintln!("  No results for \"{}\"", query);
+        return;
+    }
+
+    eprintln!("  {} results for \"{}\":\n", results.len(), query);
+    for (i, r) in results.iter().enumerate() {
+        let time = chrono_format(r.timestamp);
+        eprintln!("  {}. [{}] {} (score: {:.2})", i + 1, time, r.project_path, r.similarity_score);
+        eprintln!("     You: {}", truncate_str(&r.user_message, 80));
+        eprintln!("     AI:  {}", truncate_str(&r.assistant_snippet, 120));
+        if !r.tools_used.is_empty() {
+            eprintln!("     Tools: {}", r.tools_used.join(", "));
+        }
+        eprintln!();
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max { return s.to_string(); }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    format!("{}...", &s[..end])
+}
+
+fn chrono_format(ts: i64) -> String {
+    // Simple human-readable time
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let diff = now - ts;
+    if diff < 60 { "just now".to_string() }
+    else if diff < 3600 { format!("{}m ago", diff / 60) }
+    else if diff < 86400 { format!("{}h ago", diff / 3600) }
+    else { format!("{}d ago", diff / 86400) }
+}
+
 async fn run_scan(args: &[String]) {
     let project_path = args.iter()
         .position(|a| a == "--scan")

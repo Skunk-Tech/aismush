@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, warn};
 
+use crate::capture;
 use crate::cost;
 use crate::db;
 use crate::state::ProxyState;
@@ -35,6 +36,7 @@ pub async fn claude(
     project_path: &str,
     comp_original: u64,
     comp_final: u64,
+    request_body: Option<&serde_json::Value>,
     state: &Arc<ProxyState>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
     let start = Instant::now();
@@ -120,6 +122,8 @@ pub async fn claude(
             let model = model.to_string();
             let reason = route_reason.to_string();
             let project = project_path.to_string();
+            let user_msg = request_body.and_then(|b| capture::extract_user_message(b)).unwrap_or_default();
+            let tool_calls = request_body.map(|b| capture::extract_tool_calls(b)).unwrap_or_default();
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
 
             tokio::spawn(async move {
@@ -171,6 +175,23 @@ pub async fn claude(
 
                     // Extract memories from response
                     // Memory extraction now happens in main.rs from request body
+
+                    // Capture full conversation turn
+                    let assistant_msg = capture::assemble_response(&stream_data);
+                    if !user_msg.is_empty() || !assistant_msg.is_empty() {
+                        let conv_id = capture::get_or_create_conversation(db, &project, false).await;
+                        capture::store_turn(db, state2.embedder.as_ref(), conv_id, &capture::TurnData {
+                            user_message: user_msg.clone(),
+                            assistant_message: assistant_msg,
+                            tools: tool_calls.clone(),
+                            provider: "claude".to_string(),
+                            model: model.clone(),
+                            route_reason: reason.clone(),
+                            input_tokens, output_tokens,
+                            latency_ms: latency,
+                            cost: costs.actual_cost,
+                        }).await;
+                    }
                 }
 
                 debug!(

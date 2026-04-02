@@ -61,13 +61,16 @@ Prevents DeepSeek from choking on long conversations:
 
 For DeepSeek turns only, old tool results are truncated and messages trimmed if needed. Claude turns are never trimmed — this preserves tool_use/tool_result pairs that Claude requires.
 
-### Persistent Memory (claude-mem inspired)
-- Automatically captures tool usage: file reads, edits, commands run, searches
-- Captures decisions from assistant responses (created, fixed, changed, configured)
-- Stores observations in local SQLite, grouped by project
-- Injects relevant memories into new sessions — grouped by category (exploration, modification, command, decision)
-- Memories decay over time — recent, frequently-accessed observations surface first
-- **Your AI remembers what files you worked on and what decisions were made**
+### Deep Memory — Full Conversation Capture & Search
+- **Captures every conversation** — user questions, AI responses, tool invocations, reasoning
+- **Local semantic search** — MiniLM-L6-v2 runs on your machine in ~10ms, finds conversations by meaning
+- "auth bug" finds conversations about "JWT validation" — semantic, not just keywords
+- **FTS5 keyword search** as supplement for exact matches
+- **Auto-injects relevant past context** into new sessions
+- **Searchable via dashboard, CLI, and API** — `aismush --search "how did I fix the auth bug"`
+- Configurable retention (30 days default, or keep forever)
+- ~3KB per turn, ~260MB/year at heavy usage
+- **Your AI remembers everything — questions, answers, decisions, reasoning**
 
 ### Cost Tracking
 - Real-time cost calculation per request
@@ -304,6 +307,7 @@ A: Run `aismush --status` from any terminal, or visit `http://localhost:1849/das
 aismush              # Start the proxy server (smart routing)
 aismush --direct     # Start in direct mode (Claude only, still compresses + tracks)
 aismush --scan       # Scan codebase, generate optimized agents
+aismush --search "query"  # Search past conversations by meaning
 aismush --version    # Show version
 aismush --status     # Check if running, show quick stats
 aismush --config     # Show current configuration
