@@ -23,7 +23,13 @@ case "$OS" in
 esac
 
 case "$ARCH" in
-    x86_64|amd64)  ARCH_TAG="x86_64" ;;
+    x86_64|amd64)
+        if [ "$PLATFORM" = "macos" ]; then
+            ARCH_TAG="arm64"  # macOS Intel uses ARM binary via Rosetta 2
+        else
+            ARCH_TAG="x86_64"
+        fi
+        ;;
     aarch64|arm64) ARCH_TAG="arm64" ;;
     *)             echo "  Unsupported architecture: $ARCH"; exit 1 ;;
 esac
