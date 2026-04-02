@@ -18,11 +18,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: aismush-linux-x86_64
             binary: aismush
-          - os: macos-latest
+          - os: macos-13
             target: x86_64-apple-darwin
             artifact: aismush-macos-x86_64
             binary: aismush
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-darwin
             artifact: aismush-macos-arm64
             binary: aismush
