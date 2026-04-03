@@ -3,6 +3,13 @@
 # Usage: ./release.sh 0.4.3 "Description of changes"
 set -e
 
+# Load tokens from .env if present
+if [ -f "$(dirname "$0")/.env" ]; then
+    set -a
+    source "$(dirname "$0")/.env"
+    set +a
+fi
+
 VERSION="$1"
 DESC="$2"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"

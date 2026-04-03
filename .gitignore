@@ -4,3 +4,4 @@
 .deepseek-proxy.json
 config.json
 .hybrid-proxy/
+.env
