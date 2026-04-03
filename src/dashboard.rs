@@ -223,8 +223,9 @@ async function refresh() {{
     // Compression savings
     const compOrig = s.compressed_original_bytes || 0;
     const compFinal = s.compressed_final_bytes || 0;
-    const compTokensSaved = Math.round((compOrig - compFinal) / 4); // ~4 chars per token
-    const compCostSaved = compTokensSaved * 3.0 / 1000000; // Sonnet input pricing
+    const compTokensSaved = Math.round((compOrig - compFinal) / 3); // ~3 chars per token for JSON/code
+    // Use DB-computed compression savings (priced per-request at actual model rates)
+    const compCostSaved = s.compression_savings_total || (compTokensSaved * 3.0 / 1000000);
     document.getElementById('comp-tokens-saved').textContent = fmtK(compTokensSaved);
     document.getElementById('comp-cost-saved').textContent = fmt(compCostSaved);
 

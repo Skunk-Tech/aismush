@@ -51,12 +51,7 @@ pub struct ReportedStats {
 
 impl ProxyState {
     pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>, embedder: Option<EmbeddingEngine>, dashboard_html: String) -> Arc<Self> {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let instance_id = format!(
-            "{:x}-{:x}",
-            std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() & 0xFFFFFFFF,
-        );
+        let instance_id = load_or_create_instance_id(&config.data_dir);
         Arc::new(Self {
             config,
             client,
@@ -68,4 +63,38 @@ impl ProxyState {
             instance_id,
         })
     }
+}
+
+/// Persistent machine fingerprint. Created once, stored in data_dir/instance_id.
+/// Survives restarts so the global dashboard can count unique installations.
+fn load_or_create_instance_id(data_dir: &std::path::Path) -> String {
+    let id_path = data_dir.join("instance_id");
+    if let Ok(id) = std::fs::read_to_string(&id_path) {
+        let id = id.trim().to_string();
+        if !id.is_empty() {
+            return id;
+        }
+    }
+    // Generate a new persistent ID from random bytes
+    let mut buf = [0u8; 16];
+    if let Ok(f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let mut f = f;
+        let _ = f.read_exact(&mut buf);
+    } else {
+        // Fallback: hash data_dir + PID + timestamp
+        use ring::digest;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let seed = format!(
+            "{}-{}-{}",
+            std::process::id(),
+            data_dir.display(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos(),
+        );
+        let d = digest::digest(&digest::SHA256, seed.as_bytes());
+        buf.copy_from_slice(&d.as_ref()[..16]);
+    }
+    let id = buf.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    std::fs::write(&id_path, &id).ok();
+    id
 }

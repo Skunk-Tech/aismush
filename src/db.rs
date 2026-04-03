@@ -191,6 +191,15 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         ")?;
     }
 
+    if version < 4 {
+        info!("Running migration v4: compression_savings column");
+        conn.execute_batch(
+            "ALTER TABLE requests ADD COLUMN compression_savings REAL DEFAULT 0.0;
+             INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '4');
+            "
+        )?;
+    }
+
     Ok(())
 }
 
@@ -210,6 +219,7 @@ pub async fn log_request(
     claude_equiv_cost: f64,
     compressed_original: u64,
     compressed_final: u64,
+    compression_savings: f64,
 ) {
     let db = db.clone();
     let provider = provider.to_string();
@@ -222,13 +232,13 @@ pub async fn log_request(
         if let Err(e) = conn.execute(
             "INSERT INTO requests (provider, model, route_reason, input_tokens, output_tokens,
              cache_read_tokens, cache_write_tokens, response_bytes, latency_ms,
-             actual_cost, claude_equiv_cost, compressed_original, compressed_final)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             actual_cost, claude_equiv_cost, compressed_original, compressed_final, compression_savings)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 provider, model, reason,
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                 response_bytes, latency_ms, actual_cost, claude_equiv_cost,
-                compressed_original, compressed_final
+                compressed_original, compressed_final, compression_savings
             ],
         ) {
             error!(error = %e, "Failed to log request");
@@ -259,6 +269,7 @@ pub async fn get_stats(db: &Db) -> serde_json::Value {
         let comp_orig: i64 = conn.query_row("SELECT COALESCE(SUM(compressed_original),0) FROM requests", [], |r| r.get(0)).unwrap_or(0);
         let comp_final: i64 = conn.query_row("SELECT COALESCE(SUM(compressed_final),0) FROM requests", [], |r| r.get(0)).unwrap_or(0);
         let comp_count: i64 = conn.query_row("SELECT COUNT(*) FROM requests WHERE compressed_original > 0", [], |r| r.get(0)).unwrap_or(0);
+        let comp_savings_total: f64 = conn.query_row("SELECT COALESCE(SUM(compression_savings),0) FROM requests", [], |r| r.get(0)).unwrap_or(0.0);
 
         // Calculate potential savings: what if tool-result turns used DeepSeek?
         // Tool-result turns sent to Claude cost X, same tokens on DeepSeek would cost X * (0.27/3.0) for input
@@ -284,6 +295,7 @@ pub async fn get_stats(db: &Db) -> serde_json::Value {
             "compressed_requests": comp_count,
             "compressed_original_bytes": comp_orig,
             "compressed_final_bytes": comp_final,
+            "compression_savings_total": (comp_savings_total * 10000.0).round() / 10000.0,
         })
     }).await.unwrap_or(serde_json::json!({"error": "db query failed"}))
 }

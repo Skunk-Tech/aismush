@@ -110,17 +110,17 @@ async function recordReport(kv, report) {
   stats.total_savings = (stats.total_routing_savings || 0) + (stats.total_compression_savings || 0);
   stats.last_updated = new Date().toISOString();
 
-  // Track unique instances per day
-  const today = new Date().toISOString().slice(0, 10);
-  const instancesKey = `instances:${today}`;
-  const instanceId = report.instance_id || 'unknown';
-  const instancesRaw = await kv.get(instancesKey, 'json');
-  const instances = instancesRaw || [];
-  if (!instances.includes(instanceId)) {
-    instances.push(instanceId);
-    await kv.put(instancesKey, JSON.stringify(instances), { expirationTtl: 86400 * 7 });
+  // Track all unique installations ever seen (persistent instance_ids)
+  const instanceId = report.instance_id || '';
+  if (instanceId && instanceId !== 'unknown') {
+    const allUsersRaw = await kv.get('all_instance_ids', 'json');
+    const allUsers = allUsersRaw || [];
+    if (!allUsers.includes(instanceId)) {
+      allUsers.push(instanceId);
+      await kv.put('all_instance_ids', JSON.stringify(allUsers));
+    }
+    stats.total_users = allUsers.length;
   }
-  stats.total_users = Math.max(stats.total_users || 0, instances.length);
 
   await kv.put('global_stats', JSON.stringify(stats));
 }

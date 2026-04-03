@@ -209,13 +209,19 @@ pub async fn claude(
                 }
 
                 if let Some(ref db) = state2.db {
+                    // Compression savings priced at actual model's input rate
+                    let comp_savings = if comp_original > comp_final {
+                        let tokens_saved = (comp_original - comp_final) / 3; // ~3 chars/token for JSON
+                        let (input_price, _) = crate::cost::get_pricing("claude", &model);
+                        tokens_saved as f64 * input_price / 1_000_000.0
+                    } else { 0.0 };
                     db::log_request(
                         db, "claude", &model, &reason,
                         input_tokens, output_tokens,
                         usage.cache_read_tokens, usage.cache_write_tokens,
                         total_bytes, latency,
                         costs.actual_cost, costs.claude_equiv_cost,
-                        comp_original, comp_final,
+                        comp_original, comp_final, comp_savings,
                     ).await;
 
                     // Capture full conversation turn
@@ -366,13 +372,20 @@ pub async fn deepseek(
                 }
 
                 if let Some(ref db) = state2.db {
+                    // Compression savings: tokens saved priced at Claude equiv input rate
+                    let comp_savings = if comp_original > comp_final {
+                        let tokens_saved = (comp_original - comp_final) / 3;
+                        // Price at what Claude would have charged (Sonnet input rate as baseline)
+                        let (input_price, _) = crate::cost::get_pricing("claude", "claude-sonnet-4-20250514");
+                        tokens_saved as f64 * input_price / 1_000_000.0
+                    } else { 0.0 };
                     db::log_request(
                         db, "deepseek", &model, &reason,
                         input_tokens, output_tokens,
                         usage.cache_read_tokens, usage.cache_write_tokens,
                         total_bytes, latency,
                         costs.actual_cost, costs.claude_equiv_cost,
-                        comp_original, comp_final,
+                        comp_original, comp_final, comp_savings,
                     ).await;
 
                     if !ds_user_msg.is_empty() || !assistant_text.is_empty() {

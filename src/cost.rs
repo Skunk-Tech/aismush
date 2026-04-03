@@ -29,7 +29,7 @@ pub fn calculate(provider: &str, model: &str, input_tokens: u64, output_tokens: 
 }
 
 /// Get (input_price_per_M, output_price_per_M) for a model.
-fn get_pricing(provider: &str, model: &str) -> (f64, f64) {
+pub fn get_pricing(provider: &str, model: &str) -> (f64, f64) {
     let m = model.to_lowercase();
 
     if provider == "deepseek" || m.contains("deepseek") {

@@ -589,8 +589,9 @@ async fn report_stats(state: &Arc<ProxyState>) {
         let db_stats = db::get_stats(database).await;
         let comp_orig = db_stats["compressed_original_bytes"].as_i64().unwrap_or(0);
         let comp_final = db_stats["compressed_final_bytes"].as_i64().unwrap_or(0);
-        let comp_tokens_saved = (comp_orig - comp_final) / 4;
-        let comp_cost_saved = comp_tokens_saved as f64 * 3.0 / 1_000_000.0;
+        let comp_tokens_saved = (comp_orig - comp_final) / 3; // ~3 chars/token for JSON
+        // Use per-request compression_savings from DB (priced at actual model rates)
+        let comp_cost_saved = db_stats["compression_savings_total"].as_f64().unwrap_or(0.0);
 
         // Current cumulative values
         let cur_requests = db_stats["total_requests"].as_i64().unwrap_or(0);
