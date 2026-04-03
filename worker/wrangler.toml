@@ -1,0 +1,15 @@
+name = "aismush-stats"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+account_id = "387adedee96def7751ebfbdc440e5a7a"
+
+routes = [
+  { pattern = "aismush.us.com/api/*", zone_name = "aismush.us.com" }
+]
+
+[[kv_namespaces]]
+binding = "STATS"
+id = "70823ad866cf4948aec720474bc9e54d"
+
+[vars]
+CORS_ORIGIN = "*"

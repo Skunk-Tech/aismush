@@ -26,8 +26,21 @@ foreach ($cfg in $configPaths) {
     }
 }
 
-# First-time setup: ask for key if missing
-if (-not $env:DEEPSEEK_API_KEY) {
+# Parse --direct flag
+$DirectMode = $false
+$AISMUSH_FLAGS = ""
+$ClaudeArgs = @()
+foreach ($a in $args) {
+    if ($a -eq "--direct") {
+        $DirectMode = $true
+        $AISMUSH_FLAGS = "--direct"
+    } else {
+        $ClaudeArgs += $a
+    }
+}
+
+# First-time setup: ask for key if missing (skip in direct mode)
+if (-not $DirectMode -and -not $env:DEEPSEEK_API_KEY) {
     Write-Host ""
     Write-Host "  AISmush - First Time Setup" -ForegroundColor Cyan
     Write-Host "  ──────────────────────────"
@@ -60,7 +73,12 @@ Write-Host "  Log:       $LOGFILE"
 Write-Host ""
 
 # Start proxy
-$proxy = Start-Process -FilePath $BINARY -RedirectStandardOutput $LOGFILE -RedirectStandardError "$LOGDIR\proxy-err.log" -PassThru -WindowStyle Hidden
+$proxyArgs = if ($AISMUSH_FLAGS) { $AISMUSH_FLAGS } else { $null }
+if ($proxyArgs) {
+    $proxy = Start-Process -FilePath $BINARY -ArgumentList $proxyArgs -RedirectStandardOutput $LOGFILE -RedirectStandardError "$LOGDIR\proxy-err.log" -PassThru -WindowStyle Hidden
+} else {
+    $proxy = Start-Process -FilePath $BINARY -RedirectStandardOutput $LOGFILE -RedirectStandardError "$LOGDIR\proxy-err.log" -PassThru -WindowStyle Hidden
+}
 Start-Sleep -Milliseconds 500
 
 if ($proxy.HasExited) {
@@ -73,7 +91,7 @@ Write-Host "  Proxy started (PID $($proxy.Id))" -ForegroundColor Green
 # Launch Claude Code
 $env:ANTHROPIC_BASE_URL = "http://localhost:$PORT"
 try {
-    claude $args
+    claude @ClaudeArgs
 } finally {
     # Show stats
     try {

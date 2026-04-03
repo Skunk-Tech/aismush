@@ -89,6 +89,10 @@ try {
     # Install start script alongside binary
     $StartScript = Join-Path $InstallDir "aismush-start.ps1"
     Copy-Item (Join-Path $TmpDir "start.ps1") -Destination $StartScript -Force -ErrorAction SilentlyContinue
+
+    # Create .cmd wrapper so "aismush-start" works from cmd and PowerShell
+    $CmdWrapper = Join-Path $InstallDir "aismush-start.cmd"
+    '@echo off' + "`r`n" + 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0aismush-start.ps1" %*' | Set-Content $CmdWrapper -Encoding ASCII
 } finally {
     Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
 }
@@ -115,9 +119,10 @@ try {
 Write-Host ""
 Write-Host "  Done! Open a NEW terminal and run:" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "    aismush" -ForegroundColor White
-Write-Host ""
-Write-Host "  Or use the start script:" -ForegroundColor Cyan
-Write-Host ""
 Write-Host "    aismush-start" -ForegroundColor White
+Write-Host "      Sets up DeepSeek routing (saves ~90% on API costs)" -ForegroundColor Gray
+Write-Host "      First run will ask for your DeepSeek API key (one time only)" -ForegroundColor Gray
+Write-Host ""
+Write-Host "    aismush-start --direct" -ForegroundColor White
+Write-Host "      Uses Claude directly (no DeepSeek key needed)" -ForegroundColor Gray
 Write-Host ""
