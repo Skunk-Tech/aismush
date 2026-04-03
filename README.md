@@ -102,6 +102,16 @@ Open `http://localhost:1849/dashboard` to see:
 - Memory viewer with search and delete
 - Request history with full detail
 
+### Plan Orchestrator — Say "Go" and Walk Away
+Built-in autonomous plan execution. Ask Claude to make a plan, then say **"run plan"** — AISmush analyzes the steps, maps each one to the best specialized agent (rust-expert, data-engineer, frontend-engineer, etc.), figures out which steps can run in parallel, and executes the entire thing end-to-end. No custom file formats, no CLI commands — just talk to Claude.
+
+- Reads plans Claude already generates (standard markdown)
+- Automatically maps steps to your project's specialized agents
+- Runs independent steps in parallel for speed
+- Passes context forward so each agent knows what prior steps accomplished
+- Verifies results (cargo check, cargo test) after completion
+- Confirms before executing — you always have the final say
+
 ### Lightweight by Default
 - Written in Rust with Tokio + Hyper (same stack as Cloudflare's infrastructure)
 - **~15 MB memory** with embeddings disabled (default) — won't slow down your machine
