@@ -59,15 +59,24 @@ jobs:
         run: |
           mkdir dist
           copy target\${{ matrix.target }}\release\${{ matrix.binary }} dist\
+          copy install.ps1 dist\
           copy start.ps1 dist\
           copy README.md dist\
-          cd dist && tar czf ..\${{ matrix.artifact }}.tar.gz *
+          Compress-Archive -Path dist\* -DestinationPath ${{ matrix.artifact }}.zip
 
-      - name: Upload artifact
+      - name: Upload artifact (Unix)
+        if: matrix.os != 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.tar.gz
+
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
 
   release:
     needs: build
@@ -86,5 +95,5 @@ jobs:
             aismush-linux-x86_64/aismush-linux-x86_64.tar.gz
             aismush-macos-arm64/aismush-macos-arm64.tar.gz
             aismush-macos-x86_64/aismush-macos-x86_64.tar.gz
-            aismush-windows-x86_64/aismush-windows-x86_64.tar.gz
+            aismush-windows-x86_64/aismush-windows-x86_64.zip
           generate_release_notes: true

@@ -65,7 +65,7 @@ Write-Host ""
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 # Get latest release download URL
-$DownloadUrl = "https://github.com/$Repo/releases/latest/download/$Artifact.tar.gz"
+$DownloadUrl = "https://github.com/$Repo/releases/latest/download/$Artifact.zip"
 Write-Host "  Downloading: $DownloadUrl"
 
 # Download and extract
@@ -73,11 +73,10 @@ $TmpDir = Join-Path $env:TEMP "aismush-install-$(Get-Random)"
 New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
 
 try {
-    $TarGz = Join-Path $TmpDir "aismush.tar.gz"
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $TarGz -UseBasicParsing
+    $ZipFile = Join-Path $TmpDir "aismush.zip"
+    Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipFile -UseBasicParsing
 
-    # Extract (tar is available on Windows 10+)
-    tar xzf $TarGz -C $TmpDir
+    Expand-Archive -Path $ZipFile -DestinationPath $TmpDir -Force
 
     # Stop any running aismush before overwriting
     Get-Process -Name "aismush" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
