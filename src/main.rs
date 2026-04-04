@@ -6,17 +6,21 @@ mod cost;
 mod dashboard;
 mod db;
 mod deps;
+mod discovery;
 mod embeddings;
 mod forward;
 mod hashes;
 mod memory;
 mod prompts;
+mod provider;
 mod router;
 mod scan;
 mod search;
+mod setup;
 mod state;
 mod summarize;
 mod tokens;
+mod transform;
 
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
@@ -65,6 +69,8 @@ async fn main() {
         println!("  aismush --version    Show version");
         println!("  aismush --status     Check if proxy is running");
         println!("  aismush --config     Show current configuration");
+        println!("  aismush --setup      Interactive provider setup (DeepSeek, OpenRouter, local)");
+        println!("  aismush --providers  List all configured and discovered providers");
         println!("  aismush --embeddings Start with semantic search enabled (loads 90MB model)");
         println!("  aismush --upgrade    Upgrade to latest version");
         println!("  aismush --uninstall  Uninstall AISmush");
@@ -97,12 +103,46 @@ async fn main() {
     }
     if args.iter().any(|a| a == "--config") {
         let cfg = config::ProxyConfig::load();
-        println!("DeepSeek Key: {}", if cfg.api_key.is_empty() { "(not set)".into() } else { format!("{}...", &cfg.api_key[..8.min(cfg.api_key.len())]) });
-        println!("Port:         {}", cfg.port);
-        println!("Mode:         {}", cfg.force_provider.as_deref().unwrap_or("hybrid"));
-        println!("Verbose:      {}", cfg.verbose);
-        println!("Data Dir:     {}", cfg.data_dir.display());
-        println!("Database:     {}", cfg.db_path.display());
+        println!("DeepSeek Key:    {}", if cfg.api_key.is_empty() { "(not set)".into() } else { format!("{}...", &cfg.api_key[..8.min(cfg.api_key.len())]) });
+        println!("OpenRouter Key:  {}", if cfg.openrouter_api_key.is_empty() { "(not set)".into() } else { format!("{}...", &cfg.openrouter_api_key[..8.min(cfg.openrouter_api_key.len())]) });
+        println!("Port:            {}", cfg.port);
+        println!("Mode:            {}", cfg.force_provider.as_deref().unwrap_or("hybrid"));
+        println!("Auto-discover:   {}", cfg.auto_discover_local);
+        println!("Local servers:   {}", if cfg.local_servers.is_empty() { "(none)".into() } else { cfg.local_servers.iter().map(|(n,_,_)| n.as_str()).collect::<Vec<_>>().join(", ") });
+        println!("Blast threshold: {}", cfg.routing.blast_radius_threshold);
+        println!("Verbose:         {}", cfg.verbose);
+        println!("Data Dir:        {}", cfg.data_dir.display());
+        println!("Database:        {}", cfg.db_path.display());
+        return;
+    }
+    if args.iter().any(|a| a == "--setup") {
+        rustls::crypto::ring::default_provider().install_default().ok();
+        let https = HttpsConnectorBuilder::new()
+            .with_webpki_roots().https_or_http().enable_http1().build();
+        let client = Client::builder(TokioExecutor::new()).build(https);
+        setup::run_setup(&client).await;
+        return;
+    }
+    if args.iter().any(|a| a == "--providers") {
+        let cfg = config::ProxyConfig::load();
+        let registry = provider::build_registry(&cfg.api_key, &cfg.openrouter_api_key, &cfg.local_servers);
+        // Also run auto-discovery to show what's available
+        rustls::crypto::ring::default_provider().install_default().ok();
+        let https = HttpsConnectorBuilder::new()
+            .with_webpki_roots().https_or_http().enable_http1().build();
+        let client = Client::builder(TokioExecutor::new()).build(https);
+        let discovered = discovery::discover_local_servers(&client).await;
+        discovery::register_discovered(&tokio::sync::RwLock::new(registry).into(), &discovered).await;
+        // Re-read registry for display
+        let registry2 = provider::build_registry(&cfg.api_key, &cfg.openrouter_api_key, &cfg.local_servers);
+        // Manually add discovered ones
+        let mut display_reg = registry2;
+        for d in &discovered {
+            display_reg.register(provider::ProviderConfig::new(
+                format!("local-{}", d.name), provider::ProviderKind::OpenAICompat, &d.url, None, &d.model,
+            ).with_tier(provider::Tier::Free).with_pricing(0.0, 0.0).with_context_window(d.context_window).with_auto_discovered(true));
+        }
+        discovery::print_providers_report(&display_reg).await;
         return;
     }
     if args.iter().any(|a| a == "--upgrade") {
@@ -189,7 +229,13 @@ async fn main() {
     // Start with no embedder — initialize it in background so the server can listen immediately
     // Render dashboard HTML once at startup (static template, only port varies)
     let dashboard_html = dashboard::render(cfg.port).await;
-    let state = ProxyState::new(cfg.clone(), client, database, None, dashboard_html);
+    // Build provider registry from config
+    let registry = provider::build_registry(
+        &cfg.api_key,
+        &cfg.openrouter_api_key,
+        &cfg.local_servers,
+    );
+    let state = ProxyState::new(cfg.clone(), client, database, None, dashboard_html, registry);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));
     let listener = TcpListener::bind(addr).await.expect("Failed to bind port");
@@ -227,6 +273,25 @@ async fn main() {
             report_stats(&stats_state).await;
         }
     });
+
+    // Auto-discover local model servers and register them
+    if cfg.auto_discover_local {
+        let disc_state = state.clone();
+        tokio::spawn(async move {
+            // Initial discovery on startup
+            let discovered = discovery::discover_local_servers(&disc_state.client).await;
+            if !discovered.is_empty() {
+                discovery::register_discovered(&disc_state.registry, &discovered).await;
+            }
+            // Periodic re-discovery runs in background
+            // (the loop runs forever; we don't need the separate discovery_loop for now)
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let found = discovery::discover_local_servers(&disc_state.client).await;
+                discovery::register_discovered(&disc_state.registry, &found).await;
+            }
+        });
+    }
 
     // Periodic database cleanup (every 6 hours)
     let cleanup_state = state.clone();
@@ -326,7 +391,8 @@ async fn handle(
         }
         if path == "/stats" {
             if let Some(ref database) = state.db {
-                let stats = db::get_stats(database).await;
+                let (from_ts, to_ts) = parse_date_params(req.uri());
+                let stats = db::get_stats(database, from_ts, to_ts).await;
                 return Ok(json_resp(StatusCode::OK, &stats.to_string()));
             } else {
                 let s = state.stats.lock().await;
@@ -335,7 +401,9 @@ async fn handle(
         }
         if path == "/history" {
             if let Some(ref database) = state.db {
-                let rows = db::recent_requests(database, 20).await;
+                let (from_ts, to_ts) = parse_date_params(req.uri());
+                let limit = if from_ts > 0 || to_ts > 0 { 500 } else { 20 };
+                let rows = db::recent_requests(database, limit, from_ts, to_ts).await;
                 return Ok(json_resp(StatusCode::OK, &serde_json::to_string(&rows).unwrap()));
             }
             return Ok(json_resp(StatusCode::OK, "[]"));
@@ -423,30 +491,26 @@ async fn handle(
         }
     }
 
-    // ── Route decision (before any body modification) ──────────────────
-    let mut route_preview = router::decide(&parsed, &state.config.force_provider);
+    // ── Blast radius extraction ─────────────────────────────────────────
+    let blast_score = if let (Some(ref db), Some(ref body_val)) = (&state.db, &parsed) {
+        extract_blast_radius_score(db, &project_path, body_val).await
+    } else {
+        None
+    };
 
-    // ── Blast radius check — override routing for high-impact files ────
-    if route_preview.provider == "deepseek" {
-        if let (Some(ref db), Some(ref body_val)) = (&state.db, &parsed) {
-            let blast_score = extract_blast_radius_score(db, &project_path, body_val).await;
-            let threshold: f64 = std::env::var("AISMUSH_BLAST_THRESHOLD")
-                .ok().and_then(|v| v.parse().ok()).unwrap_or(0.7);
-            if let Some(score) = blast_score {
-                if score > threshold {
-                    route_preview = router::RouteDecision {
-                        provider: "claude",
-                        reason: "high-blast-radius",
-                        estimated_tokens: route_preview.estimated_tokens,
-                    };
-                    info!(score = format!("{:.2}", score), "Blast radius override → Claude");
-                }
-            }
-        }
-    }
+    // ── Route decision (multi-factor, blast-radius aware) ─────────────
+    let registry = state.registry.read().await;
+    let mut route = router::decide_with_registry(
+        &parsed,
+        &state.config.force_provider,
+        blast_score,
+        state.config.routing.blast_radius_threshold,
+        &registry,
+    ).await;
+    drop(registry);
 
-    // ── Compress tool_result blocks (DeepSeek only — Claude gets original bytes) ──
-    let comp_stats = if route_preview.provider == "deepseek" {
+    // ── Compress tool_result blocks (non-Claude providers — Claude gets original bytes) ──
+    let comp_stats = if route.provider != "claude" {
         if let Some(ref mut body_val) = parsed {
             compress::compress_with_summaries(body_val, state.db.as_ref())
         } else {
@@ -470,29 +534,29 @@ async fn handle(
         st.compressed_final_bytes += comp_stats.compressed_bytes as u64;
     }
 
-    // ── Memory injection (DeepSeek only for now — Claude gets unmodified body) ──
-    if route_preview.provider == "deepseek" {
+    // ── Memory injection (non-Claude providers — Claude gets unmodified body) ──
+    if route.provider != "claude" {
         if let (Some(ref db), Some(ref mut body_val)) = (&state.db, &mut parsed) {
             memory::inject_memories(db, body_val, &project_path).await;
         }
     }
 
-    // ── Route decision ──────────────────────────────────────────────────
-    let mut route = router::decide(&parsed, &state.config.force_provider);
-
     // ── Context window management ─────────────────────────────────────
-    // ONLY for DeepSeek turns. Claude has 200K window and doesn't need trimming.
+    // For non-Claude providers with smaller context windows.
+    // Claude has 200K window and doesn't need trimming.
     // Trimming messages breaks tool_use/tool_result pairs → causes 400 errors on Claude.
-    let mut body_modified = comp_stats.original_bytes != comp_stats.compressed_bytes; // Only true if content actually changed
-    if route.provider == "deepseek" {
+    let mut body_modified = comp_stats.original_bytes != comp_stats.compressed_bytes;
+    if route.provider != "claude" {
         if let Some(ref mut body_val) = parsed {
+            // All non-Claude providers use the conservative context limits (60K)
+            // Local models may have even smaller windows but ensure_fits handles that
             let ctx = context::prepare(body_val, "deepseek");
             if ctx.body_modified { body_modified = true; }
             if let Some(forced) = ctx.force_provider {
-                route.provider = forced;
-                route.reason = ctx.action;
+                route.provider = forced.to_string();
+                route.reason = ctx.action.to_string();
             }
-            if context::ensure_fits(body_val, route.provider) {
+            if context::ensure_fits(body_val, &route.provider) {
                 body_modified = true;
             }
         }
@@ -502,11 +566,14 @@ async fn handle(
         route.estimated_tokens = tokens::estimate_tokens(body_val);
     }
 
-    let display_model = if route.provider == "deepseek" { "deepseek-chat".to_string() } else { model.clone() };
+    let display_model = if route.provider == "claude" { model.clone() } else {
+        route.provider_config.as_ref().map(|p| p.default_model.clone()).unwrap_or_else(|| route.provider.clone())
+    };
     info!(
-        provider = route.provider,
+        provider = %route.provider,
         model = %display_model,
-        reason = route.reason,
+        reason = %route.reason,
+        tier = %route.tier,
         est_tokens = route.estimated_tokens,
         "Routing"
     );
@@ -522,10 +589,34 @@ async fn handle(
     let comp_final = comp_stats.compressed_bytes as u64;
 
     if route.provider == "claude" {
-        forward::claude(&parts, &final_body, &path, &model, route.reason, &project_path, comp_orig, comp_final, parsed.as_ref(), &state).await
+        forward::claude(&parts, &final_body, &path, &model, &route.reason, &project_path, comp_orig, comp_final, parsed.as_ref(), &state).await
+    } else if route.provider == "deepseek" {
+        // DeepSeek uses its Anthropic-compatible endpoint (no format conversion needed)
+        forward::deepseek(&final_body, &path, &parsed, "deepseek-chat", &route.reason, &project_path, comp_orig, comp_final, &state).await
     } else {
-        forward::deepseek(&final_body, &path, &parsed, "deepseek-chat", route.reason, &project_path, comp_orig, comp_final, &state).await
+        // All other providers use OpenAI-compatible format with conversion
+        let provider_config = route.provider_config.as_ref();
+        let base_url = provider_config.map(|p| p.base_url.as_str()).unwrap_or("http://localhost:11434");
+        let api_key = provider_config.and_then(|p| p.api_key.as_deref());
+        let target_model = provider_config.map(|p| p.default_model.as_str()).unwrap_or("default");
+        forward::openai_compat(&parsed, &route.provider, base_url, api_key, target_model, &route.reason, &project_path, comp_orig, comp_final, &state).await
     }
+}
+
+/// Parse `from` and `to` query parameters as Unix timestamps from a URI.
+fn parse_date_params(uri: &hyper::Uri) -> (i64, i64) {
+    let query = uri.query().unwrap_or("");
+    let mut from_ts: i64 = 0;
+    let mut to_ts: i64 = 0;
+    for pair in query.split('&') {
+        if let Some(val) = pair.strip_prefix("from=") {
+            from_ts = val.parse().unwrap_or(0);
+        }
+        if let Some(val) = pair.strip_prefix("to=") {
+            to_ts = val.parse().unwrap_or(0);
+        }
+    }
+    (from_ts, to_ts)
 }
 
 /// Tiny HTTP GET for --status check (localhost only).
@@ -586,7 +677,7 @@ async fn check_for_updates() {
 async fn report_stats(state: &Arc<ProxyState>) {
     // Read from DB for accurate cumulative stats (survives restarts)
     let body = if let Some(ref database) = state.db {
-        let db_stats = db::get_stats(database).await;
+        let db_stats = db::get_stats(database, 0, 0).await;
         let comp_orig = db_stats["compressed_original_bytes"].as_i64().unwrap_or(0);
         let comp_final = db_stats["compressed_final_bytes"].as_i64().unwrap_or(0);
         let comp_tokens_saved = (comp_orig - comp_final) / 3; // ~3 chars/token for JSON

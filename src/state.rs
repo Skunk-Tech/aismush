@@ -5,9 +5,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 
+use std::collections::HashMap;
 use crate::config::ProxyConfig;
 use crate::db::Db;
 use crate::embeddings::EmbeddingEngine;
+use crate::provider::ProviderRegistry;
 
 pub type HttpClient = Client<
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
@@ -23,6 +25,7 @@ pub struct ProxyState {
     pub embedder: RwLock<Option<EmbeddingEngine>>,
     pub dashboard_html: String,
     pub instance_id: String,
+    pub registry: RwLock<ProviderRegistry>,
 }
 
 #[derive(Default, Debug, serde::Serialize)]
@@ -36,6 +39,12 @@ pub struct Stats {
     pub compressed_final_bytes: u64,
     pub tool_results_compressed: u64,
     pub estimated_tokens_routed: u64,
+    /// Dynamic per-provider turn counts (includes all providers)
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub provider_turns: HashMap<String, u64>,
+    /// Dynamic per-provider byte counts
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub provider_bytes: HashMap<String, u64>,
 }
 
 /// Tracks the last values sent to the global dashboard so we can compute deltas.
@@ -50,7 +59,7 @@ pub struct ReportedStats {
 }
 
 impl ProxyState {
-    pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>, embedder: Option<EmbeddingEngine>, dashboard_html: String) -> Arc<Self> {
+    pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>, embedder: Option<EmbeddingEngine>, dashboard_html: String, registry: ProviderRegistry) -> Arc<Self> {
         let instance_id = load_or_create_instance_id(&config.data_dir);
         Arc::new(Self {
             config,
@@ -61,6 +70,7 @@ impl ProxyState {
             embedder: RwLock::new(embedder),
             dashboard_html,
             instance_id,
+            registry: RwLock::new(registry),
         })
     }
 }

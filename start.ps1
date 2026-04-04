@@ -39,25 +39,51 @@ foreach ($a in $args) {
     }
 }
 
-# First-time setup: ask for key if missing (skip in direct mode)
-if (-not $DirectMode -and -not $env:DEEPSEEK_API_KEY) {
+# Check if any provider is configured (skip in direct mode)
+$HasOpenRouter = $false
+$HasLocal = $false
+$ConfigFile = "$LOGDIR\config.json"
+if (Test-Path $ConfigFile) {
+    try {
+        $cfgData = Get-Content $ConfigFile | ConvertFrom-Json
+        if ($cfgData.openrouterKey) { $HasOpenRouter = $true }
+        if ($cfgData.local -and $cfgData.local.Count -gt 0) { $HasLocal = $true }
+    } catch {}
+}
+
+$HasAnyProvider = ($env:DEEPSEEK_API_KEY -or $HasOpenRouter -or $HasLocal)
+
+# First-time setup: offer interactive setup or quick DeepSeek key (skip in direct mode)
+if (-not $DirectMode -and -not $HasAnyProvider) {
     Write-Host ""
     Write-Host "  AISmush - First Time Setup" -ForegroundColor Cyan
     Write-Host "  ──────────────────────────"
     Write-Host ""
-    Write-Host "  You need a DeepSeek API key (free tier available)."
-    Write-Host "  Get one at: https://platform.deepseek.com/api_keys"
+    Write-Host "  No providers configured. Options:" -ForegroundColor White
     Write-Host ""
-    $key = Read-Host "  Paste your DeepSeek API key"
+    Write-Host "    aismush --setup" -ForegroundColor White
+    Write-Host "      Full interactive setup (DeepSeek, OpenRouter, local models)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Or paste a DeepSeek API key for quick start:" -ForegroundColor White
+    Write-Host "  Get one at: https://platform.deepseek.com/api_keys" -ForegroundColor Gray
+    Write-Host ""
+    $key = Read-Host "  Paste DeepSeek key (or Enter for full setup)"
     if (-not $key) {
-        Write-Host "  No key provided. Exiting." -ForegroundColor Red
-        exit 1
+        # Run interactive setup
+        & $BINARY --setup
+        # Re-load config after setup
+        if (Test-Path $ConfigFile) {
+            try {
+                $cfgData = Get-Content $ConfigFile | ConvertFrom-Json
+                if ($cfgData.apiKey) { $env:DEEPSEEK_API_KEY = $cfgData.apiKey }
+            } catch {}
+        }
+    } else {
+        $env:DEEPSEEK_API_KEY = $key
+        @{apiKey = $key} | ConvertTo-Json | Set-Content $ConfigFile
+        Write-Host "  Key saved." -ForegroundColor Green
+        Write-Host ""
     }
-    $env:DEEPSEEK_API_KEY = $key
-    # Save so they never have to do this again
-    @{apiKey = $key} | ConvertTo-Json | Set-Content "$LOGDIR\config.json"
-    Write-Host "  Key saved. You won't be asked again." -ForegroundColor Green
-    Write-Host ""
 }
 
 # Kill stale proxy

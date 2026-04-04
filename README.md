@@ -2,9 +2,9 @@
 
 **Cut your AI coding costs by 90%+ without sacrificing quality.**
 
-AISmush is a transparent proxy that sits between Claude Code and the AI providers. It intelligently routes each turn to the best model for the job — Claude for complex reasoning, DeepSeek for mechanical coding — while compressing context, managing memory across sessions, and tracking every dollar saved.
+AISmush is a transparent proxy that sits between Claude Code and the AI providers. It intelligently routes each turn to the best model for the job — Claude for complex reasoning, DeepSeek or OpenRouter for moderate tasks, local models (Ollama, LM Studio, etc.) for free mechanical work — while compressing context, managing memory across sessions, and tracking every dollar saved.
 
-One binary. Zero config. Drop-in replacement that works with your existing Claude Code setup.
+One binary. One setup command. Drop-in replacement that works with your existing Claude Code setup.
 
 ## The Problem
 
@@ -12,17 +12,19 @@ Claude Code is incredible, but it's expensive. A heavy coding session can burn t
 
 ## The Solution
 
-AISmush automatically detects what kind of work each turn requires:
+AISmush automatically detects what kind of work each turn requires and routes to the cheapest model that can handle it:
 
-| Turn Type | Routed To | Why |
-|-----------|-----------|-----|
-| Initial planning, architecture | **Claude** | Complex reasoning matters here |
-| Error recovery, debugging loops | **Claude** | Needs deep analysis to break out |
-| Tool result processing | **DeepSeek** | Mechanical — read result, decide next action |
-| Mid-session coding | **DeepSeek** | Following an established plan |
-| Large context (>64K tokens) | **Claude** | Beyond DeepSeek's effective window |
+| Turn Type | Tier | Routed To | Why |
+|-----------|------|-----------|-----|
+| Planning, architecture | Premium | **Claude** | Complex reasoning matters here |
+| Error recovery, debugging | Premium | **Claude** | Needs deep analysis to break out |
+| Code generation | Mid | **DeepSeek / OpenRouter** | Following an established plan |
+| Tool result processing | Free | **Ollama / local model** | Mechanical — zero cost |
+| File reads, simple edits | Free | **Ollama / local model** | No reasoning needed |
+| High blast-radius files | Premium | **Claude** | Shared types need careful handling |
+| Large context (>64K tokens) | Premium | **Claude** | Beyond smaller model windows |
 
-**Real-world result: 90%+ cost savings** on a large multi-language codebase (2000+ files across Rust, React, and Node.js).
+**Real-world result: 90%+ cost savings.** With local models handling tool results, most turns cost nothing.
 
 ## Features
 
@@ -47,13 +49,15 @@ The single biggest token saver. Older tool results in your conversation get repl
 - Never touches your last 4 messages — active work stays raw
 - Saves **thousands of tokens per request** in long sessions
 
-### Smart Model Routing + Blast-Radius Analysis
-- Automatically routes each turn to Claude or DeepSeek based on the task
+### Smart Multi-Provider Routing + Blast-Radius Analysis
+- Routes each turn across **Claude, DeepSeek, OpenRouter (290+ models), and local servers** (Ollama, LM Studio, llama.cpp, vLLM, Jan, KoboldCpp)
+- **Tier-based routing** — Free (local), Budget, Mid (DeepSeek/OpenRouter), Premium (Claude), Ultra (Opus)
 - **Blast-radius aware** — parses your project's import graph to know which files are shared by many others
-- Editing a leaf file? DeepSeek handles it. Editing a type definition imported by 12 files? Claude.
-- Heuristic-based (zero latency overhead — no extra API calls for classification)
-- Context-size aware — forces Claude when context exceeds DeepSeek's effective window
-- Error recovery detection — switches to Claude when DeepSeek is going in circles
+- Editing a leaf file? Local model handles it free. Editing a type definition imported by 12 files? Claude.
+- **Auto-discovery** — detects running local servers on known ports automatically
+- **Fallback chains** — if local model is down, falls back to cloud; if DeepSeek is down, falls back to Claude
+- Context-size aware — forces Claude when context exceeds smaller model windows
+- Error recovery detection — escalates to Claude when cheaper models are going in circles
 
 ### Context Compression
 - **Content-type aware** (RTK-inspired) — detects Code, Data (JSON/YAML/XML), Logs, Unknown
@@ -119,19 +123,24 @@ Built-in autonomous plan execution. Ask Claude to make a plan, then say **"run p
 - Frame-by-frame response streaming — feels identical to direct Claude connection
 - Connection pooling with keep-alive (no TLS handshake per request)
 
-## Two Modes
+## Three Modes
 
-**Smart Routing** (default) — Routes between Claude and DeepSeek. Max savings (~90%). Requires a DeepSeek API key.
+**Smart Routing** (default) — Routes between Claude, DeepSeek, OpenRouter, and local models. Max savings. Run `aismush --setup` to configure your providers.
 ```bash
 aismush-start
 ```
 
-**Direct Mode** — Claude only, no DeepSeek needed. You still get compression, memory, agents, context management, and cost tracking. The dashboard shows how much you *could* save by enabling smart routing.
+**Local + Cloud** — Local models handle free tasks, cloud handles the rest. Best for users running Ollama or LM Studio. AISmush auto-discovers local servers on startup.
+```bash
+aismush-start  # with Ollama running on port 11434
+```
+
+**Direct Mode** — Claude only, no other providers needed. You still get compression, memory, agents, context management, and cost tracking. The dashboard shows what compression saves you.
 ```bash
 aismush-start --direct
 ```
 
-Both modes give you AI-generated project agents, persistent memory, context compression, and the full dashboard.
+All modes give you AI-generated project agents, persistent memory, context compression, and the full dashboard.
 
 ## Quick Start
 
@@ -149,7 +158,7 @@ This downloads the right binary for your platform and installs it to `~/.local/b
 aismush-start
 ```
 
-First run asks for your DeepSeek API key (free at [platform.deepseek.com](https://platform.deepseek.com/api_keys)). It saves the key automatically — you'll never be asked again.
+First run offers interactive setup (`aismush --setup`) to configure DeepSeek, OpenRouter, and/or local models — with connection testing for each. Or just paste a DeepSeek key for quick start.
 
 That's it. Two commands total: install, then run.
 
@@ -167,7 +176,7 @@ This downloads the binary, installs it to `%LOCALAPPDATA%\AISmush\`, and adds it
 aismush-start
 ```
 
-First run prompts for your DeepSeek API key and saves it automatically, same as Linux/macOS.
+First run offers interactive setup or quick DeepSeek key entry, same as Linux/macOS.
 
 ### Manual Download
 
@@ -197,17 +206,17 @@ Claude Code sends request to AISmush (localhost:1849)
     |
     v
 AISmush analyzes the turn:
+    |-- Classify task type (planning, debugging, tool result, etc.)
+    |-- Check blast-radius of files being edited
     |-- Compress tool_result content (strip comments, dedup, truncate)
     |-- Estimate token count
-    |-- Check context window tier
     |-- Inject memories from previous sessions
-    |-- Decide: Claude or DeepSeek?
+    |-- Pick cheapest healthy provider at the required tier
     |
-    +---> Claude API (planning, debugging, large context)
-    |         |
-    |         +---> Response streams back to Claude Code
-    |
-    +---> DeepSeek API (tool results, mechanical coding)
+    +---> Claude API (planning, debugging, high blast-radius, large context)
+    +---> DeepSeek API (code generation, moderate complexity)
+    +---> OpenRouter (290+ models, fallback option)
+    +---> Local model (Ollama etc. — tool results, file reads — FREE)
               |
               +---> Response streams back to Claude Code
     |
@@ -229,16 +238,31 @@ AISmush reads config from (in priority order):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEEPSEEK_API_KEY` | (required) | Your DeepSeek API key |
+| `DEEPSEEK_API_KEY` | (none) | Your DeepSeek API key |
+| `OPENROUTER_API_KEY` | (none) | Your OpenRouter API key |
+| `LOCAL_MODEL_URL` | (none) | Local model server URL (e.g. `http://localhost:11434`) |
+| `LOCAL_MODEL_NAME` | (none) | Local model name (e.g. `qwen3:8b`) |
 | `PROXY_PORT` | `1849` | Port for the proxy server |
 | `PROXY_VERBOSE` | `false` | Enable debug logging |
-| `FORCE_PROVIDER` | (none) | Force all requests to `claude` or `deepseek` |
+| `FORCE_PROVIDER` | (none) | Force all requests to a specific provider |
+| `AISMUSH_AUTO_DISCOVER` | `true` | Auto-discover local model servers |
+| `AISMUSH_BLAST_THRESHOLD` | `0.5` | Blast-radius score threshold for tier escalation |
 
 ### Config File
 
 ```json
 {
   "apiKey": "sk-your-deepseek-key",
+  "openrouterKey": "sk-or-your-key",
+  "local": [
+    {"name": "ollama", "url": "http://localhost:11434", "model": "qwen3:8b"}
+  ],
+  "routing": {
+    "blastRadiusThreshold": 0.5,
+    "preferLocal": true,
+    "minTierForPlanning": "premium",
+    "minTierForDebugging": "mid"
+  },
   "port": 1849,
   "verbose": false,
   "forceProvider": null
@@ -285,23 +309,27 @@ Based on real usage with a large Rust/React/Node.js codebase:
 ## Architecture
 
 ```
-15 Rust modules:
+19 Rust modules:
 
 main.rs        — HTTP server + request pipeline
 config.rs      — JSON + env config loading
-router.rs      — Smart routing heuristics
-forward.rs     — Claude/DeepSeek forwarding + streaming
+provider.rs    — Provider abstraction (tiers, health, registry)
+router.rs      — Multi-factor tier-based routing engine
+forward.rs     — Claude/DeepSeek/OpenAI-compat forwarding + streaming
+transform.rs   — Anthropic ↔ OpenAI format conversion
+discovery.rs   — Auto-discovery of local model servers
+setup.rs       — Interactive provider setup with connection testing
 compress.rs    — Context compression engine
 summarize.rs   — Structural code summarization (3-5x token reduction)
 hashes.rs      — SHA-256 file hashing + incremental change detection
 deps.rs        — Dependency graph + blast-radius analysis
-context.rs     — 4-tier context window management
+context.rs     — Provider-aware context window management
 memory.rs      — Cross-session persistent memory
 tokens.rs      — Token estimation
-cost.rs        — Pricing tables + cost calculation
-db.rs          — SQLite persistence layer
-dashboard.rs   — Live HTML dashboard
-state.rs       — Shared state types
+cost.rs        — Dynamic pricing + compression-aware cost calculation
+db.rs          — SQLite persistence layer (with date filtering)
+dashboard.rs   — Live HTML dashboard with date range filtering
+state.rs       — Shared state types + provider registry
 ```
 
 **Dependencies:** tokio, hyper, rustls, serde, rusqlite (bundled). No OpenSSL, no Node.js, no runtime dependencies.
@@ -340,6 +368,8 @@ A: Run `aismush --status` from any terminal, or visit `http://localhost:1849/das
 ```bash
 aismush              # Start the proxy server (smart routing, lightweight)
 aismush --direct     # Start in direct mode (Claude only, still compresses + tracks)
+aismush --setup      # Interactive provider setup (DeepSeek, OpenRouter, local models)
+aismush --providers  # List all configured and discovered providers with health status
 aismush --embeddings # Start with semantic search enabled (loads 90MB model)
 aismush --scan       # Scan codebase, generate optimized agents
 aismush --search "query"  # Search past conversations by meaning
@@ -353,16 +383,15 @@ aismush --help       # Show help
 aismush-start        # Start proxy + launch Claude Code (recommended)
 ```
 
-## Global Savings Dashboard
+## Website
 
-See how much the AISmush community is saving worldwide: **[aismush.us.com](https://aismush.us.com/)**
-
-Anonymous usage stats (request counts and savings only — no personal data, no code, no API keys) are reported when a session ends. This powers the live global counter on the dashboard.
+**[aismush.us.com](https://aismush.us.com/)** — Feature overview, install instructions, and documentation.
 
 ## Requirements
 
 - [Claude Code](https://claude.ai/code) CLI installed (or any Anthropic API client)
-- [DeepSeek API key](https://platform.deepseek.com/api_keys) (free tier available)
+- At least one of: [DeepSeek API key](https://platform.deepseek.com/api_keys) (free tier), [OpenRouter API key](https://openrouter.ai/keys), or a local model server (Ollama, LM Studio, etc.)
+- Or just use `--direct` mode with Claude only (compression + memory still work)
 - Linux x86_64, macOS (Intel or Apple Silicon), or Windows x86_64
 
 ## Uninstall

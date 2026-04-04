@@ -49,6 +49,7 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
 .btn {{ padding:4px 10px; border-radius:4px; border:1px solid var(--border); background:var(--card);
         color:var(--dim); cursor:pointer; font-size:11px; font-family:var(--font); }}
 .btn:hover {{ border-color:var(--blue); color:var(--blue); }}
+.date-btn.active {{ border-color:var(--blue); color:var(--blue); background:rgba(88,166,255,0.1); }}
 .btn.danger:hover {{ border-color:var(--red); color:var(--red); }}
 #page-history, #page-search, #page-memories {{ display:none; }}
 .footer {{ margin-top:24px; color:var(--dim); font-size:11px; text-align:center; }}
@@ -68,6 +69,17 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
 
 <!-- Overview Page -->
 <div id="page-overview">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--dim)">Period:</span>
+    <button class="btn date-btn active" onclick="setDateRange('all',this)">All Time</button>
+    <button class="btn date-btn" onclick="setDateRange('today',this)">Today</button>
+    <button class="btn date-btn" onclick="setDateRange('7d',this)">7 Days</button>
+    <button class="btn date-btn" onclick="setDateRange('30d',this)">30 Days</button>
+    <span style="font-size:12px;color:var(--dim);margin-left:8px">Custom:</span>
+    <input type="date" id="date-from" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px" onchange="setCustomRange()">
+    <span style="font-size:12px;color:var(--dim)">to</span>
+    <input type="date" id="date-to" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px" onchange="setCustomRange()">
+  </div>
   <div class="grid" id="stats-grid"></div>
 
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
@@ -195,10 +207,48 @@ async function runSearch() {{
 function fmt(n) {{ return '$' + n.toFixed(4); }}
 function fmtK(n) {{ return n > 1e6 ? (n/1e6).toFixed(1)+'M' : n > 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString(); }}
 function fmtTime(ts) {{ return new Date(ts * 1000).toLocaleTimeString(); }}
+function fmtDateTime(ts) {{ const d = new Date(ts * 1000); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString(); }}
+
+let dateFrom = 0;
+let dateTo = 0;
+
+function setDateRange(range, btn) {{
+  document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  const now = Math.floor(Date.now() / 1000);
+  switch(range) {{
+    case 'today':
+      const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+      dateFrom = Math.floor(todayStart.getTime() / 1000); dateTo = 0; break;
+    case '7d': dateFrom = now - 7*86400; dateTo = 0; break;
+    case '30d': dateFrom = now - 30*86400; dateTo = 0; break;
+    default: dateFrom = 0; dateTo = 0;
+  }}
+  document.getElementById('date-from').value = '';
+  document.getElementById('date-to').value = '';
+  refresh();
+}}
+
+function setCustomRange() {{
+  document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+  const from = document.getElementById('date-from').value;
+  const to = document.getElementById('date-to').value;
+  dateFrom = from ? Math.floor(new Date(from).getTime() / 1000) : 0;
+  dateTo = to ? Math.floor(new Date(to + 'T23:59:59').getTime() / 1000) : 0;
+  refresh();
+}}
+
+function dateParams() {{
+  let p = '';
+  if (dateFrom) p += '&from=' + dateFrom;
+  if (dateTo) p += '&to=' + dateTo;
+  return p ? '?' + p.slice(1) : '';
+}}
 
 async function refresh() {{
   try {{
-    const r = await fetch('/stats');
+    const dp = dateParams();
+    const r = await fetch('/stats' + dp);
     const s = await r.json();
 
     const grid = document.getElementById('stats-grid');
@@ -213,45 +263,52 @@ async function refresh() {{
       <div class="card"><div class="l">Context Saved</div><div class="v green">${{fmtK((s.compressed_original_bytes||0)-(s.compressed_final_bytes||0))}} B</div></div>
     `;
 
-    const pct = s.savings_percent || 0;
-    document.getElementById('savings-bar').style.width = Math.min(pct, 100) + '%';
-    document.getElementById('savings-bar').textContent = pct.toFixed(1) + '% saved';
-    document.getElementById('actual-cost').textContent = fmt(s.actual_cost || 0);
-    document.getElementById('equiv-cost').textContent = fmt(s.claude_equiv_cost || 0);
-    document.getElementById('saved-cost').textContent = fmt(s.savings || 0);
+    // Total savings = routing savings (already in equiv_cost - actual_cost) which now
+    // includes compression because equiv_cost uses uncompressed token count
+    const totalSaved = s.savings || 0;
+    const actualCost = s.actual_cost || 0;
+    const equivCost = s.claude_equiv_cost || 0;
+    const totalPct = equivCost > 0 ? ((totalSaved / equivCost) * 100) : 0;
 
-    // Compression savings
+    document.getElementById('savings-bar').style.width = Math.min(totalPct, 100) + '%';
+    document.getElementById('savings-bar').textContent = totalPct.toFixed(1) + '% saved';
+    document.getElementById('actual-cost').textContent = fmt(actualCost);
+    document.getElementById('equiv-cost').textContent = fmt(equivCost);
+    document.getElementById('saved-cost').textContent = fmt(totalSaved);
+
+    // Compression savings breakdown
     const compOrig = s.compressed_original_bytes || 0;
     const compFinal = s.compressed_final_bytes || 0;
-    const compTokensSaved = Math.round((compOrig - compFinal) / 3); // ~3 chars per token for JSON/code
-    // Use DB-computed compression savings (priced per-request at actual model rates)
-    const compCostSaved = s.compression_savings_total || (compTokensSaved * 3.0 / 1000000);
+    const compTokensSaved = Math.round((compOrig - compFinal) / 3);
+    const compCostSaved = s.compression_savings_total || 0;
     document.getElementById('comp-tokens-saved').textContent = fmtK(compTokensSaved);
     document.getElementById('comp-cost-saved').textContent = fmt(compCostSaved);
 
-    // Routing savings
-    const routingSaved = s.savings || 0;
-    const routingPct = s.savings_percent || 0;
+    // Routing savings breakdown (the difference between what we paid vs what
+    // we would have paid on Claude for the SAME compressed tokens)
+    // This is: savings minus compression savings
+    const routingSaved = Math.max(0, totalSaved - compCostSaved);
+    const routingPct = equivCost > 0 ? ((routingSaved / equivCost) * 100) : 0;
     const potential = s.potential_routing_savings || 0;
     document.getElementById('routing-saved').textContent = fmt(routingSaved);
     const routingPctEl = document.getElementById('routing-pct');
     const routingHint = document.getElementById('routing-hint');
     if (s.deepseek_turns > 0) {{
-      routingPctEl.textContent = routingPct.toFixed(1) + '% cheaper';
+      routingPctEl.textContent = routingPct.toFixed(1) + '% from routing';
       routingPctEl.style.color = 'var(--green)';
       routingHint.textContent = 'Smart routing active';
     }} else if (potential > 0) {{
       routingPctEl.textContent = fmt(potential) + ' potential';
       routingPctEl.style.color = 'var(--yellow)';
-      routingHint.textContent = 'Enable smart routing to unlock this';
+      routingHint.textContent = 'Add a DeepSeek key to unlock routing savings';
     }} else {{
       routingPctEl.textContent = 'N/A';
       routingPctEl.style.color = 'var(--dim)';
-      routingHint.textContent = '';
+      routingHint.textContent = 'Using Claude only — compression savings still active';
     }}
 
     // Load recent requests
-    const hr = await fetch('/history');
+    const hr = await fetch('/history' + dp);
     const hist = await hr.json();
     const tbody = document.getElementById('recent-table');
     tbody.innerHTML = hist.slice(0, 10).map(r => `
@@ -270,7 +327,7 @@ async function refresh() {{
 
 async function loadHistory() {{
   try {{
-    const r = await fetch('/history');
+    const r = await fetch('/history' + dateParams());
     const hist = await r.json();
     if (hist.length === 0) {{
       document.getElementById('history-table').innerHTML = '<tr><td colspan="8" style="color:var(--dim)">No requests recorded yet</td></tr>';
@@ -278,7 +335,7 @@ async function loadHistory() {{
     }}
     document.getElementById('history-table').innerHTML = hist.map(r => `
       <tr>
-        <td>${{fmtTime(r.timestamp)}}</td>
+        <td>${{fmtDateTime(r.timestamp)}}</td>
         <td><span class="tag ${{r.provider}}">${{r.provider}}</span></td>
         <td>${{r.model}}</td>
         <td>${{r.reason}}</td>

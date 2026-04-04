@@ -13,6 +13,7 @@ use crate::cost;
 use crate::db;
 use crate::state::ProxyState;
 use crate::tokens;
+use crate::transform;
 
 fn full(data: impl Into<Bytes>) -> BoxBody<Bytes, hyper::Error> {
     Full::new(data.into()).map_err(|n| match n {}).boxed()
@@ -198,7 +199,9 @@ pub async fn claude(
                 let input_tokens = if usage.input_tokens > 0 { usage.input_tokens } else { (total_bytes / 4) as u64 };
                 let output_tokens = if usage.output_tokens > 0 { usage.output_tokens } else { (total_bytes / 8) as u64 };
 
-                let costs = cost::calculate("claude", &model, input_tokens, output_tokens);
+                // Tokens saved by compression (bytes_saved / 3 chars per token)
+                let comp_tokens_saved = if comp_original > comp_final { (comp_original - comp_final) / 3 } else { 0 };
+                let costs = cost::calculate_with_compression("claude", &model, input_tokens, output_tokens, comp_tokens_saved);
 
                 {
                     let mut st = state2.stats.lock().await;
@@ -209,11 +212,10 @@ pub async fn claude(
                 }
 
                 if let Some(ref db) = state2.db {
-                    // Compression savings priced at actual model's input rate
-                    let comp_savings = if comp_original > comp_final {
-                        let tokens_saved = (comp_original - comp_final) / 3; // ~3 chars/token for JSON
+                    // Compression savings: what these compressed-away tokens would have cost on Claude
+                    let comp_savings = if comp_tokens_saved > 0 {
                         let (input_price, _) = crate::cost::get_pricing("claude", &model);
-                        tokens_saved as f64 * input_price / 1_000_000.0
+                        comp_tokens_saved as f64 * input_price / 1_000_000.0
                     } else { 0.0 };
                     db::log_request(
                         db, "claude", &model, &reason,
@@ -361,7 +363,8 @@ pub async fn deepseek(
                 let input_tokens = if usage.input_tokens > 0 { usage.input_tokens } else { (total_bytes / 4) as u64 };
                 let output_tokens = if usage.output_tokens > 0 { usage.output_tokens } else { (total_bytes / 8) as u64 };
 
-                let costs = cost::calculate("deepseek", "deepseek-chat", input_tokens, output_tokens);
+                let comp_tokens_saved = if comp_original > comp_final { (comp_original - comp_final) / 3 } else { 0 };
+                let costs = cost::calculate_with_compression("deepseek", "deepseek-chat", input_tokens, output_tokens, comp_tokens_saved);
 
                 {
                     let mut st = state2.stats.lock().await;
@@ -372,12 +375,9 @@ pub async fn deepseek(
                 }
 
                 if let Some(ref db) = state2.db {
-                    // Compression savings: tokens saved priced at Claude equiv input rate
-                    let comp_savings = if comp_original > comp_final {
-                        let tokens_saved = (comp_original - comp_final) / 3;
-                        // Price at what Claude would have charged (Sonnet input rate as baseline)
+                    let comp_savings = if comp_tokens_saved > 0 {
                         let (input_price, _) = crate::cost::get_pricing("claude", "claude-sonnet-4-20250514");
-                        tokens_saved as f64 * input_price / 1_000_000.0
+                        comp_tokens_saved as f64 * input_price / 1_000_000.0
                     } else { 0.0 };
                     db::log_request(
                         db, "deepseek", &model, &reason,
@@ -420,6 +420,243 @@ pub async fn deepseek(
         Err(e) => {
             error!(error = %e, "DeepSeek upstream error");
             Ok(json_resp(StatusCode::BAD_GATEWAY, &format!(r#"{{"error":"{}"}}"#, e)))
+        }
+    }
+}
+
+/// Forward request to any OpenAI-compatible provider (OpenRouter, Ollama, LM Studio, etc.).
+///
+/// Converts the Anthropic-format request to OpenAI format, streams the response,
+/// and converts the OpenAI SSE back to Anthropic SSE for Claude Code.
+pub async fn openai_compat(
+    parsed: &Option<Value>,
+    provider_id: &str,
+    base_url: &str,
+    api_key: Option<&str>,
+    target_model: &str,
+    route_reason: &str,
+    project_path: &str,
+    comp_original: u64,
+    comp_final: u64,
+    state: &Arc<ProxyState>,
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
+    let start = Instant::now();
+
+    let body = parsed.clone().unwrap_or(Value::Object(Default::default()));
+
+    // Convert Anthropic request format to OpenAI format
+    let openai_body = transform::anthropic_to_openai(&body, target_model);
+    let body_bytes = serde_json::to_vec(&openai_body).unwrap_or_default();
+
+    // Build the URL — ensure we hit /v1/chat/completions
+    let url = if base_url.contains("/v1") {
+        format!("{}/chat/completions", base_url.trim_end_matches('/'))
+    } else {
+        format!("{}/v1/chat/completions", base_url.trim_end_matches('/'))
+    };
+
+    let mut builder = Request::builder()
+        .method(hyper::Method::POST)
+        .uri(&url)
+        .header("content-type", "application/json");
+
+    // Auth header (not needed for most local servers)
+    if let Some(key) = api_key {
+        builder = builder.header("authorization", format!("Bearer {}", key));
+    }
+
+    // OpenRouter-specific headers
+    if provider_id == "openrouter" || base_url.contains("openrouter.ai") {
+        builder = builder.header("HTTP-Referer", "https://aismush.us.com");
+        builder = builder.header("X-Title", "AISmush");
+    }
+
+    // Extract host from URL for host header
+    if let Some(host) = url.split("://").nth(1).and_then(|s| s.split('/').next()).and_then(|s| s.split(':').next()) {
+        builder = builder.header("host", host);
+    }
+
+    let req = match builder.body(full(Bytes::from(body_bytes))) {
+        Ok(r) => r,
+        Err(e) => {
+            error!(error = %e, provider = provider_id, "Failed to build request");
+            return Ok(json_resp(StatusCode::INTERNAL_SERVER_ERROR, &format!(r#"{{"error":"{}"}}"#, e)));
+        }
+    };
+
+    match state.client.request(req).await {
+        Ok(resp) => {
+            let status = resp.status();
+
+            if status.as_u16() >= 500 {
+                let err_body = resp.into_body().collect().await
+                    .map(|b| String::from_utf8_lossy(&b.to_bytes()).to_string())
+                    .unwrap_or_default();
+                error!(status = status.as_u16(), provider = provider_id, "Provider server error");
+                return Ok(json_resp(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY), &format!(
+                    r#"{{"error":"{} returned {}","details":{}}}"#,
+                    provider_id, status, serde_json::to_string(&err_body).unwrap_or("\"\"".into())
+                )));
+            }
+
+            // Stream response, converting OpenAI SSE -> Anthropic SSE
+            let body_stream = resp.into_body();
+            let state2 = state.clone();
+            let provider_id = provider_id.to_string();
+            let model = target_model.to_string();
+            let reason = route_reason.to_string();
+            let project = project_path.to_string();
+            let user_msg = parsed.as_ref().and_then(|b| capture::extract_user_message(b)).unwrap_or_default();
+            let tool_calls = parsed.as_ref().map(|b| capture::extract_tool_calls(b)).unwrap_or_default();
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
+
+            tokio::spawn(async move {
+                let mut total_bytes = 0u64;
+                let mut assistant_text = String::with_capacity(4096);
+                let mut sse_buf = String::new();
+                let mut converter = transform::OpenAIToAnthropicStream::new(&model);
+                let mut stream = body_stream;
+
+                loop {
+                    match stream.frame().await {
+                        Some(Ok(frame)) => {
+                            if let Some(data) = frame.data_ref() {
+                                total_bytes += data.len() as u64;
+                                if let Ok(text) = std::str::from_utf8(data) {
+                                    sse_buf.push_str(text);
+
+                                    // Process complete SSE lines
+                                    while let Some(pos) = sse_buf.find('\n') {
+                                        let line = sse_buf[..pos].trim().to_string();
+                                        sse_buf.drain(..pos + 1);
+
+                                        if line.is_empty() { continue; }
+
+                                        let data_str = if let Some(d) = line.strip_prefix("data: ") {
+                                            d
+                                        } else {
+                                            continue;
+                                        };
+
+                                        // Extract assistant text from OpenAI chunk BEFORE conversion
+                                        // (much more reliable than parsing from converted SSE events)
+                                        if data_str != "[DONE]" {
+                                            if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data_str) {
+                                                if let Some(choices) = chunk.get("choices").and_then(|c| c.as_array()) {
+                                                    for choice in choices {
+                                                        if let Some(text) = choice.get("delta").and_then(|d| d.get("content")).and_then(|c| c.as_str()) {
+                                                            if assistant_text.len() < 32_768 {
+                                                                let remaining = 32_768 - assistant_text.len();
+                                                                assistant_text.push_str(&text[..text.len().min(remaining)]);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Convert OpenAI SSE -> Anthropic SSE
+                                        let anthropic_events = converter.process_chunk(data_str);
+                                        for event in &anthropic_events {
+                                            let event_bytes = Bytes::from(event.clone());
+                                            if tx.send(Ok(Frame::data(event_bytes))).await.is_err() {
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Some(Err(e)) => { let _ = tx.send(Err(e)).await; break; }
+                        None => break,
+                    }
+                }
+
+                // Flush remaining buffer
+                if !sse_buf.is_empty() {
+                    let line = sse_buf.trim().to_string();
+                    if let Some(data_str) = line.strip_prefix("data: ") {
+                        let events = converter.process_chunk(data_str);
+                        for event in events {
+                            let _ = tx.send(Ok(Frame::data(Bytes::from(event)))).await;
+                        }
+                    }
+                }
+
+                let latency = start.elapsed().as_millis() as u64;
+                let input_tokens = if converter.input_tokens() > 0 { converter.input_tokens() } else { (total_bytes / 4) as u64 };
+                let output_tokens = if converter.output_tokens() > 0 { converter.output_tokens() } else { (total_bytes / 8) as u64 };
+
+                let comp_tokens_saved = if comp_original > comp_final { (comp_original - comp_final) / 3 } else { 0 };
+                let costs = cost::calculate_with_compression(&provider_id, &model, input_tokens, output_tokens, comp_tokens_saved);
+
+                {
+                    let mut st = state2.stats.lock().await;
+                    st.total_requests += 1;
+                    st.estimated_tokens_routed += input_tokens + output_tokens;
+                    // Update dynamic provider counters
+                    *st.provider_turns.entry(provider_id.clone()).or_insert(0) += 1;
+                    *st.provider_bytes.entry(provider_id.clone()).or_insert(0) += total_bytes;
+                    // Also update legacy counters for backward compat
+                    if provider_id == "deepseek" {
+                        st.deepseek_turns += 1;
+                        st.deepseek_bytes += total_bytes;
+                    }
+                }
+
+                if let Some(ref db) = state2.db {
+                    let comp_savings = if comp_original > comp_final {
+                        let tokens_saved = (comp_original - comp_final) / 3;
+                        let (input_price, _) = crate::cost::get_pricing("claude", "claude-sonnet-4-20250514");
+                        tokens_saved as f64 * input_price / 1_000_000.0
+                    } else { 0.0 };
+                    db::log_request(
+                        db, &provider_id, &model, &reason,
+                        input_tokens, output_tokens,
+                        0, 0, // no cache tokens for OpenAI-compat providers
+                        total_bytes, latency,
+                        costs.actual_cost, costs.claude_equiv_cost,
+                        comp_original, comp_final, comp_savings,
+                    ).await;
+
+                    if !user_msg.is_empty() || !assistant_text.is_empty() {
+                        let conv_id = capture::get_or_create_conversation(db, &project, false).await;
+                        let embedder_guard = state2.embedder.read().await;
+                        capture::store_turn(db, embedder_guard.as_ref(), conv_id, &capture::TurnData {
+                            user_message: user_msg.clone(),
+                            assistant_message: assistant_text,
+                            tools: tool_calls.clone(),
+                            provider: provider_id.clone(),
+                            model: model.clone(),
+                            route_reason: reason.clone(),
+                            input_tokens, output_tokens,
+                            latency_ms: latency,
+                            cost: costs.actual_cost,
+                        }).await;
+                    }
+                }
+
+                debug!(
+                    provider = %provider_id, model = %model,
+                    input = input_tokens, output = output_tokens,
+                    cost = format!("${:.4}", costs.actual_cost),
+                    saved = format!("${:.4}", costs.savings),
+                    latency_ms = latency,
+                    "Complete (OpenAI-compat)"
+                );
+            });
+
+            // Return response with Anthropic-compatible headers
+            let rb = Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "text/event-stream")
+                .header("cache-control", "no-cache");
+
+            Ok(rb.body(StreamBody::new(tokio_stream::wrappers::ReceiverStream::new(rx)).boxed()).unwrap())
+        }
+        Err(e) => {
+            error!(error = %e, provider = provider_id, "Upstream connection error");
+            Ok(json_resp(StatusCode::BAD_GATEWAY, &format!(r#"{{"error":"{} connection failed: {}"}}"#, provider_id, e)))
         }
     }
 }

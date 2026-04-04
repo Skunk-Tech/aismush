@@ -246,38 +246,41 @@ pub async fn log_request(
     }).await.ok();
 }
 
-/// Get aggregated stats from the database.
-pub async fn get_stats(db: &Db) -> serde_json::Value {
+/// Get aggregated stats from the database, optionally filtered by date range.
+/// `from_ts` and `to_ts` are Unix timestamps. 0 means no filter on that end.
+pub async fn get_stats(db: &Db, from_ts: i64, to_ts: i64) -> serde_json::Value {
     let db = db.clone();
     tokio::task::spawn_blocking(move || {
         let conn = db.blocking_lock();
 
-        let total: i64 = conn.query_row("SELECT COUNT(*) FROM requests", [], |r| r.get(0)).unwrap_or(0);
-        let claude: i64 = conn.query_row("SELECT COUNT(*) FROM requests WHERE provider='claude'", [], |r| r.get(0)).unwrap_or(0);
-        let deepseek: i64 = conn.query_row("SELECT COUNT(*) FROM requests WHERE provider='deepseek'", [], |r| r.get(0)).unwrap_or(0);
+        // Build WHERE clause for date filtering
+        let where_clause = date_where(from_ts, to_ts);
+        let w = if where_clause.is_empty() { String::new() } else { format!(" WHERE {}", where_clause) };
+        let and_w = if where_clause.is_empty() { String::new() } else { format!(" AND {}", where_clause) };
 
-        let total_input: i64 = conn.query_row("SELECT COALESCE(SUM(input_tokens),0) FROM requests", [], |r| r.get(0)).unwrap_or(0);
-        let total_output: i64 = conn.query_row("SELECT COALESCE(SUM(output_tokens),0) FROM requests", [], |r| r.get(0)).unwrap_or(0);
+        let total: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM requests{}", w), [], |r| r.get(0)).unwrap_or(0);
+        let claude: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM requests WHERE provider='claude'{}", and_w), [], |r| r.get(0)).unwrap_or(0);
+        let deepseek: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM requests WHERE provider='deepseek'{}", and_w), [], |r| r.get(0)).unwrap_or(0);
 
-        let actual_cost: f64 = conn.query_row("SELECT COALESCE(SUM(actual_cost),0) FROM requests", [], |r| r.get(0)).unwrap_or(0.0);
-        let equiv_cost: f64 = conn.query_row("SELECT COALESCE(SUM(claude_equiv_cost),0) FROM requests", [], |r| r.get(0)).unwrap_or(0.0);
+        let total_input: i64 = conn.query_row(&format!("SELECT COALESCE(SUM(input_tokens),0) FROM requests{}", w), [], |r| r.get(0)).unwrap_or(0);
+        let total_output: i64 = conn.query_row(&format!("SELECT COALESCE(SUM(output_tokens),0) FROM requests{}", w), [], |r| r.get(0)).unwrap_or(0);
+
+        let actual_cost: f64 = conn.query_row(&format!("SELECT COALESCE(SUM(actual_cost),0) FROM requests{}", w), [], |r| r.get(0)).unwrap_or(0.0);
+        let equiv_cost: f64 = conn.query_row(&format!("SELECT COALESCE(SUM(claude_equiv_cost),0) FROM requests{}", w), [], |r| r.get(0)).unwrap_or(0.0);
         let savings = equiv_cost - actual_cost;
         let savings_pct = if equiv_cost > 0.0 { (savings / equiv_cost) * 100.0 } else { 0.0 };
 
-        let avg_latency: f64 = conn.query_row("SELECT COALESCE(AVG(latency_ms),0) FROM requests", [], |r| r.get(0)).unwrap_or(0.0);
+        let avg_latency: f64 = conn.query_row(&format!("SELECT COALESCE(AVG(latency_ms),0) FROM requests{}", w), [], |r| r.get(0)).unwrap_or(0.0);
 
-        let comp_orig: i64 = conn.query_row("SELECT COALESCE(SUM(compressed_original),0) FROM requests", [], |r| r.get(0)).unwrap_or(0);
-        let comp_final: i64 = conn.query_row("SELECT COALESCE(SUM(compressed_final),0) FROM requests", [], |r| r.get(0)).unwrap_or(0);
-        let comp_count: i64 = conn.query_row("SELECT COUNT(*) FROM requests WHERE compressed_original > 0", [], |r| r.get(0)).unwrap_or(0);
-        let comp_savings_total: f64 = conn.query_row("SELECT COALESCE(SUM(compression_savings),0) FROM requests", [], |r| r.get(0)).unwrap_or(0.0);
+        let comp_orig: i64 = conn.query_row(&format!("SELECT COALESCE(SUM(compressed_original),0) FROM requests{}", w), [], |r| r.get(0)).unwrap_or(0);
+        let comp_final: i64 = conn.query_row(&format!("SELECT COALESCE(SUM(compressed_final),0) FROM requests{}", w), [], |r| r.get(0)).unwrap_or(0);
+        let comp_count: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM requests WHERE compressed_original > 0{}", and_w), [], |r| r.get(0)).unwrap_or(0);
+        let comp_savings_total: f64 = conn.query_row(&format!("SELECT COALESCE(SUM(compression_savings),0) FROM requests{}", w), [], |r| r.get(0)).unwrap_or(0.0);
 
-        // Calculate potential savings: what if tool-result turns used DeepSeek?
-        // Tool-result turns sent to Claude cost X, same tokens on DeepSeek would cost X * (0.27/3.0) for input
         let claude_tool_cost: f64 = conn.query_row(
-            "SELECT COALESCE(SUM(actual_cost),0) FROM requests WHERE provider='claude' AND route_reason IN ('tool-result','mid-session')",
+            &format!("SELECT COALESCE(SUM(actual_cost),0) FROM requests WHERE provider='claude' AND route_reason IN ('tool-result','mid-session'){}", and_w),
             [], |r| r.get(0)
         ).unwrap_or(0.0);
-        // DeepSeek is ~10x cheaper than Sonnet for these turns
         let potential_routing_savings = claude_tool_cost * 0.9;
 
         serde_json::json!({
@@ -298,6 +301,16 @@ pub async fn get_stats(db: &Db) -> serde_json::Value {
             "compression_savings_total": (comp_savings_total * 10000.0).round() / 10000.0,
         })
     }).await.unwrap_or(serde_json::json!({"error": "db query failed"}))
+}
+
+/// Build a SQL WHERE fragment for timestamp filtering.
+fn date_where(from_ts: i64, to_ts: i64) -> String {
+    match (from_ts > 0, to_ts > 0) {
+        (true, true) => format!("timestamp >= {} AND timestamp <= {}", from_ts, to_ts),
+        (true, false) => format!("timestamp >= {}", from_ts),
+        (false, true) => format!("timestamp <= {}", to_ts),
+        (false, false) => String::new(),
+    }
 }
 
 /// Get all memories.
@@ -335,18 +348,28 @@ pub async fn clear_memories(db: &Db) {
     }).await.ok();
 }
 
-/// Get recent requests for the dashboard.
-pub async fn recent_requests(db: &Db, limit: usize) -> Vec<serde_json::Value> {
+/// Get recent requests for the dashboard, optionally filtered by date range.
+pub async fn recent_requests(db: &Db, limit: usize, from_ts: i64, to_ts: i64) -> Vec<serde_json::Value> {
     let db = db.clone();
     tokio::task::spawn_blocking(move || {
         let conn = db.blocking_lock();
-        let mut stmt = conn.prepare(
-            "SELECT timestamp, provider, model, route_reason, input_tokens, output_tokens,
-                    latency_ms, actual_cost, claude_equiv_cost
-             FROM requests ORDER BY id DESC LIMIT ?1"
-        ).ok()?;
 
-        let rows = stmt.query_map(params![limit as i64], |row| {
+        let where_clause = date_where(from_ts, to_ts);
+        let sql = if where_clause.is_empty() {
+            format!(
+                "SELECT timestamp, provider, model, route_reason, input_tokens, output_tokens,
+                        latency_ms, actual_cost, claude_equiv_cost
+                 FROM requests ORDER BY id DESC LIMIT {}", limit)
+        } else {
+            format!(
+                "SELECT timestamp, provider, model, route_reason, input_tokens, output_tokens,
+                        latency_ms, actual_cost, claude_equiv_cost
+                 FROM requests WHERE {} ORDER BY id DESC LIMIT {}", where_clause, limit)
+        };
+
+        let mut stmt = conn.prepare(&sql).ok()?;
+
+        let rows = stmt.query_map([], |row| {
             Ok(serde_json::json!({
                 "timestamp": row.get::<_, i64>(0)?,
                 "provider": row.get::<_, String>(1)?,

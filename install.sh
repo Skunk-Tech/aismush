@@ -129,48 +129,63 @@ for cfg in "$PWD/config.json" "$PWD/.deepseek-proxy.json" "$CONFIG"; do
     fi
 done
 
-# If no key found anywhere, ask the user (skip in direct mode)
-if [ -z "$DEEPSEEK_API_KEY" ] && ! echo "$@" | grep -q "\-\-direct"; then
+# Check if any provider is configured (skip in direct mode)
+HAS_OPENROUTER=$(python3 -c "import json;print(json.load(open('$CONFIG')).get('openrouterKey',''),end='')" 2>/dev/null || true)
+HAS_LOCAL=$(python3 -c "import json;print(len(json.load(open('$CONFIG')).get('local',[])),end='')" 2>/dev/null || true)
+
+if [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$HAS_OPENROUTER" ] && [ "$HAS_LOCAL" != "0" ] 2>/dev/null; then
+    HAS_PROVIDER=false
+else
+    HAS_PROVIDER=true
+fi
+
+if ! $HAS_PROVIDER && ! echo "$@" | grep -q "\-\-direct"; then
     echo ""
     echo "  AISmush - First Time Setup"
     echo "  ──────────────────────────"
     echo ""
-    echo "  You need a DeepSeek API key (free tier available)."
+    echo "  No providers configured. Run the interactive setup to configure"
+    echo "  DeepSeek, OpenRouter, and/or local models:"
+    echo ""
+    echo "    aismush --setup"
+    echo ""
+    echo "  Or provide a DeepSeek API key for quick start:"
     echo "  Get one at: https://platform.deepseek.com/api_keys"
     echo ""
-    read -p "  Paste your DeepSeek API key: " DEEPSEEK_API_KEY
+    read -p "  Paste your DeepSeek API key (or Enter for --setup): " DEEPSEEK_API_KEY
     echo ""
 
     if [ -z "$DEEPSEEK_API_KEY" ]; then
-        echo "  No key provided. Exiting."
-        exit 1
-    fi
-
-    # Validate the key
-    echo "  Testing key..."
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        -X POST https://api.deepseek.com/v1/chat/completions \
-        -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d '{"model":"deepseek-chat","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
-        2>/dev/null)
-
-    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "429" ]; then
-        echo "  Key is valid!"
+        aismush --setup
+        # Re-load config after setup
+        DEEPSEEK_API_KEY=$(python3 -c "import json;print(json.load(open('$CONFIG')).get('apiKey',''),end='')" 2>/dev/null || true)
     else
-        echo "  Key validation failed (HTTP $HTTP_CODE)."
-        echo "  Check your key at https://platform.deepseek.com/api_keys"
-        read -p "  Save anyway? (y/n): " SAVE_ANYWAY
-        if [ "$SAVE_ANYWAY" != "y" ]; then
-            exit 1
-        fi
-    fi
+        # Validate the key
+        echo "  Testing key..."
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST https://api.deepseek.com/v1/chat/completions \
+            -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"model":"deepseek-chat","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+            2>/dev/null)
 
-    # Save it so they never have to do this again
-    echo "{\"apiKey\":\"$DEEPSEEK_API_KEY\"}" > "$CONFIG"
-    export DEEPSEEK_API_KEY
-    echo "  Key saved to $CONFIG"
-    echo ""
+        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "429" ]; then
+            echo "  Key is valid!"
+        else
+            echo "  Key validation failed (HTTP $HTTP_CODE)."
+            echo "  Check your key at https://platform.deepseek.com/api_keys"
+            read -p "  Save anyway? (y/n): " SAVE_ANYWAY
+            if [ "$SAVE_ANYWAY" != "y" ]; then
+                exit 1
+            fi
+        fi
+
+        # Save it so they never have to do this again
+        echo "{\"apiKey\":\"$DEEPSEEK_API_KEY\"}" > "$CONFIG"
+        export DEEPSEEK_API_KEY
+        echo "  Key saved to $CONFIG"
+        echo ""
+    fi
 fi
 
 # Handle --direct flag

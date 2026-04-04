@@ -11,6 +11,37 @@ pub struct ProxyConfig {
     pub force_provider: Option<String>,
     pub data_dir: PathBuf,
     pub db_path: PathBuf,
+    /// OpenRouter API key for access to 290+ models
+    pub openrouter_api_key: String,
+    /// Explicitly configured local model servers: (name, url, model)
+    pub local_servers: Vec<(String, String, String)>,
+    /// Auto-discover local model servers on known ports
+    pub auto_discover_local: bool,
+    /// Routing configuration
+    pub routing: RoutingConfig,
+}
+
+#[derive(Clone, Debug)]
+pub struct RoutingConfig {
+    /// Blast radius score threshold for tier escalation (default 0.5)
+    pub blast_radius_threshold: f64,
+    /// Prefer local models when available for eligible tasks
+    pub prefer_local: bool,
+    /// Minimum tier for planning tasks
+    pub min_tier_planning: String,
+    /// Minimum tier for debugging tasks
+    pub min_tier_debugging: String,
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            blast_radius_threshold: 0.5,
+            prefer_local: true,
+            min_tier_planning: "premium".into(),
+            min_tier_debugging: "mid".into(),
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -20,6 +51,27 @@ struct FileConfig {
     port: Option<u16>,
     verbose: Option<bool>,
     force_provider: Option<String>,
+    openrouter_key: Option<String>,
+    local: Option<Vec<LocalServerFileConfig>>,
+    auto_discover_local: Option<bool>,
+    routing: Option<RoutingFileConfig>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct LocalServerFileConfig {
+    name: String,
+    url: String,
+    model: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RoutingFileConfig {
+    blast_radius_threshold: Option<f64>,
+    prefer_local: Option<bool>,
+    min_tier_for_planning: Option<String>,
+    min_tier_for_debugging: Option<String>,
 }
 
 impl ProxyConfig {
@@ -52,9 +104,51 @@ impl ProxyConfig {
             .or(file_cfg.force_provider)
             .filter(|s| !s.is_empty());
 
+        let openrouter_api_key = env::var("OPENROUTER_API_KEY")
+            .ok()
+            .or(file_cfg.openrouter_key)
+            .unwrap_or_default();
+
+        let mut local_servers: Vec<(String, String, String)> = Vec::new();
+
+        // From config file
+        if let Some(locals) = file_cfg.local {
+            for l in locals {
+                local_servers.push((l.name, l.url, l.model));
+            }
+        }
+
+        // From env vars (single local server shorthand)
+        if let (Ok(url), Ok(model)) = (env::var("LOCAL_MODEL_URL"), env::var("LOCAL_MODEL_NAME")) {
+            if !url.is_empty() {
+                let name = env::var("LOCAL_MODEL_SERVER").unwrap_or_else(|_| "local".into());
+                local_servers.push((name, url, model));
+            }
+        }
+
+        let auto_discover_local = env::var("AISMUSH_AUTO_DISCOVER")
+            .ok()
+            .map(|v| v != "false" && v != "0")
+            .or(file_cfg.auto_discover_local)
+            .unwrap_or(true);
+
+        let routing = {
+            let fr = file_cfg.routing.unwrap_or_default();
+            let mut rc = RoutingConfig::default();
+            if let Some(t) = fr.blast_radius_threshold { rc.blast_radius_threshold = t; }
+            if let Some(p) = fr.prefer_local { rc.prefer_local = p; }
+            if let Some(ref t) = fr.min_tier_for_planning { rc.min_tier_planning = t.clone(); }
+            if let Some(ref t) = fr.min_tier_for_debugging { rc.min_tier_debugging = t.clone(); }
+            // Also check env var for blast threshold (backward compat)
+            if let Ok(v) = env::var("AISMUSH_BLAST_THRESHOLD") {
+                if let Ok(t) = v.parse() { rc.blast_radius_threshold = t; }
+            }
+            rc
+        };
+
         let db_path = data_dir.join("proxy.db");
 
-        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path }
+        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, local_servers, auto_discover_local, routing }
     }
 
     fn load_file() -> FileConfig {
