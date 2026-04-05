@@ -106,12 +106,14 @@ Open `http://localhost:1849/dashboard` to see:
 - Memory viewer with search and delete
 - Request history with full detail
 
-### Plan Orchestrator — Say "Go" and Walk Away
-Built-in autonomous plan execution. Ask Claude to make a plan, then say **"run plan"** — AISmush analyzes the steps, maps each one to the best specialized agent (rust-expert, data-engineer, frontend-engineer, etc.), figures out which steps can run in parallel, and executes the entire thing end-to-end. No custom file formats, no CLI commands — just talk to Claude.
+### Plan Orchestrator — DAG-Based Parallel Execution
+Built-in autonomous plan execution. Ask Claude to make a plan, then say **"run plan"** — AISmush builds a dependency graph, maps each step to a specialized agent, and executes with maximum parallelism. Steps unblock individually as their dependencies complete — no waiting for entire waves to finish.
 
+- **DAG-based execution** — Step 3 starts the moment Step 1 finishes, without waiting for unrelated Step 2
+- **Default: independent** — steps run in parallel unless they explicitly depend on each other
 - Reads plans Claude already generates (standard markdown)
-- Automatically maps steps to your project's specialized agents
-- Runs independent steps in parallel for speed
+- Automatically maps steps to your project's specialized agents (rust-expert, data-engineer, etc.)
+- Uses Claude Code's task system for persistent progress tracking
 - Passes context forward so each agent knows what prior steps accomplished
 - Verifies results (cargo check, cargo test) after completion
 - Confirms before executing — you always have the final say

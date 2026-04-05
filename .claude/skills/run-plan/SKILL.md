@@ -1,166 +1,139 @@
 ---
 name: run-plan
-description: Execute a plan autonomously with parallel agents. Triggers on "run plan", "go", "execute plan", "execute the plan", "automate this plan", "start the plan".
+description: Execute a plan autonomously with parallel agents. Triggers on "run plan", "execute plan", "execute the plan", "start the plan".
 ---
 
 <run-plan>
 
-You are the Plan Orchestrator. The user wants you to execute a plan end-to-end using specialized agents working in parallel. Follow this exact process:
+You are the Plan Orchestrator. Execute the user's plan using specialized agents with DAG-based parallel execution.
 
 ## 1. Find the plan
 
-- Use Glob to find `.claude/plans/*.md` files
-- Read the most recently modified one
-- If none exist, tell the user: "No plan found. Create a plan first with EnterPlanMode."
+Search for plan files in order:
+1. If a plan file path was mentioned in this conversation, use that
+2. Glob `.claude/plans/*.md` (project directory)
+3. Glob `~/.claude/plans/*.md` (user home directory)
 
-## 2. Parse the plan
+Read the most recently modified plan file. If none found: "No plan found. Create one first — ask me to plan something and I'll use EnterPlanMode."
 
-Read the plan file and extract:
-- **Title**: The first `#` heading
-- **Steps**: Each section that starts with `## Step` or is a numbered `##` heading (e.g. `## 1.`, `## Step 1:`, `## Phase 1:`)
-- **Context section**: Any text before the first step (background, motivation)
-- **Verification section**: Any `## Verification` or `## Testing` section at the end
+## 2. Parse steps
 
-Ignore sections like `## Context`, `## Why this is better`, `## Files to modify` — these are metadata, not executable steps.
+From the plan file extract:
+- **Title**: first `#` heading
+- **Steps**: sections starting with `## Step`, `## 1.`, `## Phase 1:`, or similar numbered `##` headings
+- **Verification**: `## Verification` or `## Testing` section if present
 
-## 3. Analyze dependencies
+Skip metadata sections (Context, Background, Files to modify, etc.).
 
-For each step, determine dependencies by reading the content:
-- Explicit references: "using output from step 1", "after step 2", "depends on step 3"
-- Implicit ordering: if step 2 modifies files that step 3 reads, step 3 depends on step 2
-- **Default assumption**: steps are sequential UNLESS they clearly operate on different files/areas
-- Group steps into **waves** — a wave is a set of steps whose dependencies are all satisfied
+For each step, check if it explicitly depends on another step ("after step 1", "depends on step 2", "using output from step 3"). Also check if files modified by one step are read by another.
 
-Example:
-- Wave 1: Steps 1, 2 (independent — different files)
-- Wave 2: Step 3 (depends on both 1 and 2)
-- Wave 3: Step 4 (depends on 3)
+## 3. Build dependency graph
+
+For each step, list which step IDs must complete before it can start.
+
+**Default: steps are INDEPENDENT** unless content clearly indicates a dependency. This maximizes parallelism. Only add a dependency when a step truly cannot run without another step's output.
 
 ## 4. Map agents
 
-Match each step to the best specialized agent based on what it does:
+Match each step to a specialized agent:
 
-| Step content | Agent (subagent_type) |
+| Content keywords | subagent_type |
 |---|---|
-| Rust code, Cargo, proxy logic, Tokio/Hyper | rust-expert |
-| Database, SQLite, migrations, queries | data-engineer |
-| JavaScript, Cloudflare Workers, frontend JS | javascript-expert |
-| Dashboard UI, HTML, CSS, frontend components | frontend-engineer |
-| Backend API, routing, request handling | backend-engineer |
-| Bug investigation, debugging, error tracing | debugger |
-| Writing or running tests | test-runner |
-| Code review, quality check | code-reviewer |
-| General/unclear | general-purpose (default) |
+| Rust, Cargo, Tokio, Hyper, proxy | rust-expert |
+| Database, SQLite, migration, schema | data-engineer |
+| JavaScript, Workers, frontend JS | javascript-expert |
+| Dashboard, HTML, CSS, UI | frontend-engineer |
+| Backend, API, routing, handler | backend-engineer |
+| Bug, debug, error, investigate | debugger |
+| Test, testing, verify | test-runner |
+| Review, audit, quality | code-reviewer |
+| Everything else | general-purpose |
 
-If a step spans multiple domains, pick the primary one.
+## 5. Create tasks and confirm
 
-## 5. Show confirmation
+Use **TaskCreate** for each step with:
+- subject: `Step N: [brief title]`  
+- description: the full step content from the plan
 
-Display this to the user:
+Then use **TaskUpdate** with `addBlockedBy` to wire up dependencies.
 
-```
-PLAN: [title]
-STEPS: [N total] | WAVES: [M waves]
-
-Wave 1 (parallel):
-  Step 1: [title] -> [agent-name]
-  Step 2: [title] -> [agent-name]
-
-Wave 2 (after wave 1):
-  Step 3: [title] -> [agent-name]
-
-Wave 3 (after wave 2):
-  Step 4: [title] -> [agent-name]
-
-VERIFICATION:
-  [list from verification section, or "cargo check + cargo test"]
-
-This will launch [N] agents to execute the entire plan autonomously.
-```
-
-Then use AskUserQuestion:
-- Question: "Ready to execute this plan?"
-- Options: "Go" (execute), "No" (cancel)
-
-If the user says No, stop. Do not proceed.
-
-## 6. Execute
-
-Process one wave at a time:
-
-### For each wave:
-
-**If the wave has 1 step:** Launch a single Agent (foreground) with:
-- `subagent_type`: the mapped agent
-- `prompt`: Include the step description, the plan context, and summaries of completed prior steps
-- Wait for completion
-
-**If the wave has 2+ steps:** Launch ALL agents in the wave in a SINGLE message (multiple Agent tool calls):
-- Each with `run_in_background: true`
-- Each with the appropriate `subagent_type`
-- Each prompt includes: step description + plan context + prior step results
-- You will be notified when each completes
-
-### Agent prompt template:
+Display the execution plan to the user:
 
 ```
-You are executing Step [N] of an automated plan.
+PLAN: [title] — [N] steps
 
-PLAN CONTEXT:
-[context section from the plan]
+Step 1: [title] → [agent] (no deps — ready)
+Step 2: [title] → [agent] (no deps — ready)
+Step 3: [title] → [agent] (blocked by: 1)
+Step 4: [title] → [agent] (blocked by: 2, 3)
 
-YOUR TASK (Step [N]):
-[full step content from the plan]
-
-PRIOR COMPLETED STEPS:
-[for each completed step: "Step X: [title] - [brief summary of what was done]"]
-
-IMPORTANT:
-- Execute this step completely. Make all necessary code changes.
-- If you encounter errors, fix them before finishing.
-- Report what you did and what files you changed.
+[M] steps ready immediately, [K] blocked
 ```
 
-### After each wave completes:
-- Read each agent's result
-- Record a brief summary of what was accomplished
-- Check if any agent reported failure
-- If a step failed: report it to the user and ask whether to continue, retry, or abort
+Ask with **AskUserQuestion**: "Execute this plan?" — Options: "Go", "No"
 
-## 7. Verify
+If No: stop immediately.
 
-After all waves complete:
-- If the plan has a Verification section, execute those checks (cargo test, cargo check, etc.)
-- If no verification section exists but Rust files were modified: run `cargo check` and `cargo test`
-- If JavaScript files were modified: check for syntax errors
-- Report results
+## 6. Execute the DAG
 
-## 8. Report
+Loop until all tasks are complete or failed:
+
+1. Call **TaskList** to find tasks that are `pending` with empty `blockedBy`
+2. For each ready task:
+   - **TaskUpdate** status to `in_progress`
+   - Launch **Agent** with the mapped `subagent_type`
+   - Prompt: step description + plan context + what prior steps accomplished
+   - If ONE ready task: launch foreground (wait for result)
+   - If MULTIPLE ready tasks: launch ALL in a single message with `run_in_background: true`
+3. When an agent completes:
+   - **TaskUpdate** status to `completed`
+   - Record what it accomplished (files changed, key outcomes)
+   - Check TaskList — new tasks may now be unblocked
+4. If an agent fails:
+   - **TaskUpdate** status to `completed` with failure note
+   - Ask user: Continue (skip dependents), Retry, or Abort?
+   - If abort: stop everything
+
+**Agent prompt template:**
+```
+You are executing Step [N] of a plan: "[plan title]"
+
+YOUR TASK:
+[full step content]
+
+COMPLETED STEPS:
+[for each done step: "Step X ([title]): [what was accomplished]"]
+
+Execute this step completely. Fix any errors before finishing. Report what you did and what files you changed.
+```
+
+## 7. Verify and report
+
+After all steps complete:
+- If plan has a Verification section: execute those checks
+- If Rust files were changed: run `cargo check && cargo test`
+- If JS files were changed: check for syntax errors
 
 Display final summary:
-
 ```
 PLAN COMPLETE: [title]
 
-  Step 1: [title] ............. DONE
-  Step 2: [title] ............. DONE
-  Step 3: [title] ............. DONE
-  Step 4: [title] ............. FAILED: [reason]
+Step 1: [title] ............ DONE
+Step 2: [title] ............ DONE  
+Step 3: [title] ............ DONE
+Step 4: [title] ............ FAILED: [reason]
 
-Verification:
-  cargo check: PASSED
-  cargo test: 31 passed, 0 failed
+Verification: cargo test — 51 passed, 0 failed
 
-[X/N steps completed successfully]
+[X/N steps completed]
 ```
 
-## RULES
+## Rules
 
-1. **ALWAYS confirm before executing.** Never skip the Go/No prompt.
-2. **Use specialized agents.** They have project-specific knowledge. Don't use general-purpose when a specialist exists.
-3. **Pass context forward.** Each agent must know what prior steps accomplished so it doesn't redo or conflict with their work.
-4. **Parallel when possible.** Independent steps in the same wave MUST launch simultaneously.
-5. **Stop on critical failure.** If a step fails and later steps depend on it, skip the dependent steps and report.
-6. **Don't modify the plan file.** The plan is read-only input. Execution state lives in the conversation.
+1. ALWAYS confirm before executing — never skip the Go/No prompt
+2. Use the TaskCreate/TaskUpdate system for ALL state tracking
+3. Default to INDEPENDENT steps — only add dependencies when clearly required
+4. Pass completed step summaries to each agent so they have context
+5. If a step fails and others depend on it, skip the dependents (don't try to run them)
 
 </run-plan>
