@@ -179,13 +179,22 @@ First run offers interactive setup (`aismush --setup`) to configure DeepSeek, Op
 
 That's it. Two commands total: install, then run.
 
-### One-Line Install (Windows)
+### Windows — Package Managers
+
+```powershell
+# Scoop (recommended)
+scoop bucket add aismush https://github.com/Skunk-Tech/aismush
+scoop install aismush
+
+# winget
+winget install SkunkTech.AISmush
+```
+
+### Windows — One-Line Script
 
 ```powershell
 irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 | iex
 ```
-
-This downloads the binary, installs it to `%LOCALAPPDATA%\AISmush\`, and adds it to your PATH.
 
 ### Run
 

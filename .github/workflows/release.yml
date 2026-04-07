@@ -97,3 +97,76 @@ jobs:
             aismush-macos-x86_64/aismush-macos-x86_64.tar.gz
             aismush-windows-x86_64/aismush-windows-x86_64.zip
           generate_release_notes: true
+
+  # Submit to Windows Package Manager (winget)
+  winget:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: windows-latest
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: SkunkTech.AISmush
+          installers-regex: 'aismush-windows-x86_64\.zip$'
+          token: ${{ secrets.WINGET_PAT }}
+          fork-user: Skunk-Tech
+
+  # Update Scoop bucket manifest
+  scoop:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Scoop manifest
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Download the Windows zip to compute hash
+          URL="https://github.com/Skunk-Tech/aismush/releases/download/v${VERSION}/aismush-windows-x86_64.zip"
+          # Wait for release assets to be available
+          sleep 30
+          curl -sLf "$URL" -o aismush.zip || { echo "Download failed, skipping scoop update"; exit 0; }
+          HASH=$(sha256sum aismush.zip | cut -d' ' -f1)
+
+          # Update bucket/aismush.json
+          cat > bucket/aismush.json << SCOOP
+          {
+              "version": "${VERSION}",
+              "description": "Smart AI coding proxy — cuts Claude Code costs by 90% with multi-provider routing, compression, and file caching",
+              "homepage": "https://aismush.us.com",
+              "license": "MIT",
+              "architecture": {
+                  "64bit": {
+                      "url": "${URL}",
+                      "hash": "${HASH}"
+                  }
+              },
+              "bin": [
+                  "aismush.exe"
+              ],
+              "post_install": [
+                  "if (Test-Path \\"\$dir\\\\start.ps1\\") { Copy-Item \\"\$dir\\\\start.ps1\\" \\"\$dir\\\\aismush-start.ps1\\"; Set-Content \\"\$dir\\\\aismush-start.cmd\\" '@echo off\\r\\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \\"%~dp0aismush-start.ps1\\" %*' }",
+                  "Write-Host 'AISmush installed! Run: aismush --setup' -ForegroundColor Green"
+              ],
+              "checkver": {
+                  "github": "https://github.com/Skunk-Tech/aismush"
+              },
+              "autoupdate": {
+                  "architecture": {
+                      "64bit": {
+                          "url": "https://github.com/Skunk-Tech/aismush/releases/download/v\$version/aismush-windows-x86_64.zip"
+                      }
+                  }
+              }
+          }
+          SCOOP
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/aismush.json
+          git diff --cached --quiet || git commit -m "scoop: update to v${VERSION}" && git push
