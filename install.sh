@@ -129,17 +129,27 @@ for cfg in "$PWD/config.json" "$PWD/.deepseek-proxy.json" "$CONFIG"; do
     fi
 done
 
+# Parse --direct flag FIRST (before provider check)
+AISMUSH_FLAGS=""
+CLAUDE_ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--direct" ]; then
+        AISMUSH_FLAGS="--direct"
+    else
+        CLAUDE_ARGS+=("$arg")
+    fi
+done
+
 # Check if any provider is configured (skip in direct mode)
 HAS_OPENROUTER=$(python3 -c "import json;print(json.load(open('$CONFIG')).get('openrouterKey',''),end='')" 2>/dev/null || true)
 HAS_LOCAL=$(python3 -c "import json;print(len(json.load(open('$CONFIG')).get('local',[])),end='')" 2>/dev/null || true)
 
-if [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$HAS_OPENROUTER" ] && [ "$HAS_LOCAL" != "0" ] 2>/dev/null; then
-    HAS_PROVIDER=false
-else
+HAS_PROVIDER=false
+if [ -n "$DEEPSEEK_API_KEY" ] || [ -n "$HAS_OPENROUTER" ] || [ "$HAS_LOCAL" != "0" ] 2>/dev/null; then
     HAS_PROVIDER=true
 fi
 
-if ! $HAS_PROVIDER && ! echo "$@" | grep -q "\-\-direct"; then
+if ! $HAS_PROVIDER && [ -z "$AISMUSH_FLAGS" ]; then
     echo ""
     echo "  AISmush - First Time Setup"
     echo "  ──────────────────────────"
@@ -187,17 +197,6 @@ if ! $HAS_PROVIDER && ! echo "$@" | grep -q "\-\-direct"; then
         echo ""
     fi
 fi
-
-# Handle --direct flag
-AISMUSH_FLAGS=""
-CLAUDE_ARGS=()
-for arg in "$@"; do
-    if [ "$arg" = "--direct" ]; then
-        AISMUSH_FLAGS="--direct"
-    else
-        CLAUDE_ARGS+=("$arg")
-    fi
-done
 
 # Kill stale proxy
 lsof -ti:$PORT 2>/dev/null | xargs kill -9 2>/dev/null || true

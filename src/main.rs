@@ -1,4 +1,5 @@
 mod capture;
+mod cmd_compress;
 mod compress;
 mod config;
 mod context;
@@ -8,6 +9,7 @@ mod db;
 mod deps;
 mod discovery;
 mod embeddings;
+mod file_cache;
 mod forward;
 mod hashes;
 mod memory;
@@ -182,9 +184,10 @@ async fn main() {
         .compact()
         .init();
 
-    if cfg.api_key.is_empty() {
-        warn!("No DeepSeek API key configured");
-    } else {
+    let is_direct = cfg.force_provider.as_deref() == Some("claude");
+    if cfg.api_key.is_empty() && !is_direct {
+        info!("No DeepSeek API key — run 'aismush --setup' to configure providers");
+    } else if !cfg.api_key.is_empty() {
         info!(key = &cfg.api_key[..8.min(cfg.api_key.len())], "DeepSeek key loaded");
     }
 
@@ -491,6 +494,12 @@ async fn handle(
         }
     }
 
+    // ── File cache (applies to ALL providers including Claude) ──────────
+    let file_cache_stats = {
+        let mut cache = state.file_cache.lock().await;
+        file_cache::apply_file_cache(&mut parsed, &mut cache)
+    };
+
     // ── Blast radius extraction ─────────────────────────────────────────
     let blast_score = if let (Some(ref db), Some(ref body_val)) = (&state.db, &parsed) {
         extract_blast_radius_score(db, &project_path, body_val).await
@@ -509,15 +518,24 @@ async fn handle(
     ).await;
     drop(registry);
 
-    // ── Compress tool_result blocks (non-Claude providers — Claude gets original bytes) ──
-    let comp_stats = if route.provider != "claude" {
-        if let Some(ref mut body_val) = parsed {
-            compress::compress_with_summaries(body_val, state.db.as_ref())
-        } else {
-            compress::CompressionStats::default()
-        }
+    // ── Compress tool_result blocks (ALL providers — old messages only) ──
+    // compress_with_summaries() skips the last 4 messages automatically,
+    // so recent tool_results stay raw while old ones get summarized/compressed.
+    let comp_stats = if let Some(ref mut body_val) = parsed {
+        compress::compress_with_summaries(body_val, state.db.as_ref())
     } else {
         compress::CompressionStats::default()
+    };
+
+    // Add file cache savings to compression stats
+    let comp_stats = {
+        let mut cs = comp_stats;
+        if file_cache_stats.bytes_saved > 0 {
+            cs.original_bytes += file_cache_stats.bytes_saved;
+            // compressed_bytes stays the same (the markers are tiny)
+            cs.tool_results_processed += file_cache_stats.cache_hits;
+        }
+        cs
     };
 
     if comp_stats.tool_results_processed > 0 {
@@ -526,6 +544,7 @@ async fn handle(
             original = comp_stats.original_bytes,
             compressed = comp_stats.compressed_bytes,
             savings_pct = format!("{:.0}", comp_stats.savings_percent()),
+            file_cache_hits = file_cache_stats.cache_hits,
             "Compressed context"
         );
         let mut st = state.stats.lock().await;

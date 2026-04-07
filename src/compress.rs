@@ -265,7 +265,11 @@ fn compress_text(input: &str) -> String {
             result
         }
         ContentType::Log => {
-            // Don't strip comments from logs, but dedup aggressively
+            // Try command-specific compression first (cargo test, git log, etc.)
+            if let Some(compressed) = crate::cmd_compress::compress_command_output(input) {
+                return compressed;
+            }
+            // Fallback: generic log compression
             let mut result = dedup_lines(input);
             result = normalize_whitespace(&result);
             if result.len() > 8_000 {
@@ -275,7 +279,11 @@ fn compress_text(input: &str) -> String {
             }
         }
         ContentType::Unknown => {
-            // Conservative — only whitespace normalization and dedup
+            // Try command-specific compression first
+            if let Some(compressed) = crate::cmd_compress::compress_command_output(input) {
+                return compressed;
+            }
+            // Fallback: conservative — only whitespace normalization and dedup
             let mut result = normalize_whitespace(input);
             result = dedup_lines(&result);
             if result.len() > 12_000 {

@@ -59,14 +59,29 @@ The single biggest token saver. Older tool results in your conversation get repl
 - Context-size aware — forces Claude when context exceeds smaller model windows
 - Error recovery detection — escalates to Claude when cheaper models are going in circles
 
-### Context Compression
-- **Content-type aware** (RTK-inspired) — detects Code, Data (JSON/YAML/XML), Logs, Unknown
-- Structural summarization for old code (see above)
-- Strips comments from code (never touches JSON, YAML, or data formats)
-- Normalizes whitespace, collapses blank lines
-- Aggressively deduplicates repeated log lines
-- Smart truncation preserves function signatures in code
-- **60-80% token reduction** on code (structural summaries + compression combined), safe passthrough for data
+### Advanced Context Compression
+Three layers of compression, all active in every mode (including Claude-only direct mode):
+
+**Layer 1: Command-Specific Patterns** — 10+ command categories with targeted compression:
+- `cargo test` output: 50 lines → 2 lines (keeps pass/fail summary + error details)
+- `cargo build`: strips "Compiling" lines, keeps only errors/warnings
+- `git status`: condensed one-line-per-category format
+- `git diff`: strips redundant headers, keeps only hunks
+- `git log`: one-line-per-commit format
+- Also: npm, docker, jest, pytest, vitest output
+
+**Layer 2: File Content Caching** — Claude Code reads the same files repeatedly. AISmush caches file content hashes and replaces unchanged re-reads with a compact marker:
+- First read: ~2,000 tokens (full content, cached for later)
+- Subsequent reads: ~10 tokens ("[File unchanged — cached]")
+- **99% savings** on repeated file reads
+- LRU cache with 500 entries, auto-eviction
+
+**Layer 3: Content-Type Compression** (RTK-inspired):
+- **Code**: strip comments, normalize whitespace, deduplicate lines
+- **Data** (JSON/YAML/XML): never modified — safe passthrough
+- **Logs**: aggressive deduplication
+- Smart truncation preserves function signatures
+- **60-80% additional reduction** on code combined with structural summaries
 
 ### 4-Tier Context Window Management
 Prevents DeepSeek from choking on long conversations:

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use crate::config::ProxyConfig;
 use crate::db::Db;
 use crate::embeddings::EmbeddingEngine;
+use crate::file_cache::FileCache;
 use crate::provider::ProviderRegistry;
 
 pub type HttpClient = Client<
@@ -26,6 +27,7 @@ pub struct ProxyState {
     pub dashboard_html: String,
     pub instance_id: String,
     pub registry: RwLock<ProviderRegistry>,
+    pub file_cache: Mutex<FileCache>,
 }
 
 #[derive(Default, Debug, serde::Serialize)]
@@ -71,6 +73,7 @@ impl ProxyState {
             dashboard_html,
             instance_id,
             registry: RwLock::new(registry),
+            file_cache: Mutex::new(FileCache::new(500)),
         })
     }
 }
