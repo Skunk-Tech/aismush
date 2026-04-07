@@ -79,6 +79,8 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
     <input type="date" id="date-from" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px" onchange="setCustomRange()">
     <span style="font-size:12px;color:var(--dim)">to</span>
     <input type="date" id="date-to" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px" onchange="setCustomRange()">
+    <span style="flex:1"></span>
+    <button class="btn danger" onclick="resetStats()" style="font-size:10px;padding:3px 8px">Reset All Stats</button>
   </div>
   <div class="grid" id="stats-grid"></div>
 
@@ -371,6 +373,13 @@ async function clearMemories() {{
   if (!confirm('Clear all memories?')) return;
   await fetch('/memories/clear', {{ method: 'POST' }});
   loadMemories();
+}}
+
+async function resetStats() {{
+  if (!confirm('Reset ALL stats? This deletes all request history and cost data. Memories and conversations are kept.')) return;
+  await fetch('/stats/reset', {{ method: 'POST' }});
+  refresh();
+  if (currentPage === 'history') loadHistory();
 }}
 
 // Auto-refresh every 5s

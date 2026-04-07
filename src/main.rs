@@ -448,6 +448,17 @@ async fn handle(
             return Ok(json_resp(StatusCode::OK, "[]"));
         }
     }
+    if method == hyper::Method::POST && path == "/stats/reset" {
+        if let Some(ref database) = state.db {
+            db::reset_stats(database).await;
+            // Also reset in-memory stats
+            let mut st = state.stats.lock().await;
+            *st = state::Stats::default();
+            // Clear file cache
+            state.file_cache.lock().await.clear();
+        }
+        return Ok(json_resp(StatusCode::OK, r#"{"ok":true,"message":"All stats reset"}"#));
+    }
     if method == hyper::Method::POST && path == "/memories/clear" {
         if let Some(ref database) = state.db {
             db::clear_memories(database).await;

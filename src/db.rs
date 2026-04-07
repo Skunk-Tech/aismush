@@ -339,6 +339,18 @@ pub async fn get_memories(db: &Db) -> Vec<serde_json::Value> {
     }).await.ok().flatten().unwrap_or_default()
 }
 
+/// Reset all stats — deletes all request history and sessions.
+/// Keeps memories and conversation captures intact.
+pub async fn reset_stats(db: &Db) {
+    let db = db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.blocking_lock();
+        conn.execute("DELETE FROM requests", []).ok();
+        conn.execute("DELETE FROM sessions", []).ok();
+        tracing::info!("Stats reset — all request history cleared");
+    }).await.ok();
+}
+
 /// Clear all memories.
 pub async fn clear_memories(db: &Db) {
     let db = db.clone();
