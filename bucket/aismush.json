@@ -1,12 +1,12 @@
 {
-    "version": "0.8.1",
+    "version": "0.8.2",
     "description": "Smart AI coding proxy — cuts Claude Code costs by 90% with multi-provider routing, compression, and file caching",
     "homepage": "https://aismush.us.com",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/Skunk-Tech/aismush/releases/download/v0.8.1/aismush-windows-x86_64.zip",
-            "hash": "04d7bcaf8d31719f79858de19a2b1902d96e339690b3f96214317f3f1e005abd"
+            "url": "https://github.com/Skunk-Tech/aismush/releases/download/v0.8.2/aismush-windows-x86_64.zip",
+            "hash": "3c7668d033a46366da781ab9360a72239e31c6fe7e64eb781ed61e87e6b6afb1"
         }
     },
     "bin": [
