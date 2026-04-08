@@ -30,7 +30,14 @@ pub fn compress_request_body(body: &mut Value) -> CompressionStats {
         return stats;
     };
 
-    for msg in messages.iter_mut() {
+    // Only compress OLD messages — skip last 4 to preserve active tool_use/tool_result pairs.
+    // Modifying recent tool_result content causes Claude API 400 errors
+    // ("tool use concurrency issues") because the content no longer matches
+    // what Claude expects from its tool_use blocks.
+    let msg_count = messages.len();
+    let cutoff = if msg_count > 4 { msg_count - 4 } else { return stats; };
+
+    for msg in messages[..cutoff].iter_mut() {
         if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
             continue;
         }
