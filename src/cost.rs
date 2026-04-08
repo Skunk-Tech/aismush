@@ -18,7 +18,7 @@ pub fn calculate(provider: &str, model: &str, input_tokens: u64, output_tokens: 
 ///
 /// `tokens_saved_by_compression` is the number of input tokens that were compressed away
 /// BEFORE the request reached the provider. These need to be added back to compute the
-/// true "what would this have cost on raw Claude with no proxy" number.
+/// true "what would this have cost without the proxy" number.
 pub fn calculate_with_compression(
     provider: &str,
     model: &str,
@@ -30,16 +30,35 @@ pub fn calculate_with_compression(
     let actual = (input_tokens as f64 / 1_000_000.0) * pricing.0
         + (output_tokens as f64 / 1_000_000.0) * pricing.1;
 
-    // "Without AISmush" baseline: Claude Sonnet at full uncompressed token count
-    let sonnet = get_pricing("claude", "claude-sonnet-4-20250514");
-    let uncompressed_input = input_tokens + tokens_saved_by_compression;
-    let equiv = (uncompressed_input as f64 / 1_000_000.0) * sonnet.0
-        + (output_tokens as f64 / 1_000_000.0) * sonnet.1;
+    // "Without AISmush" baseline = actual + what we saved.
+    //
+    // Two sources of savings:
+    // 1. Compression: tokens we removed, priced at THIS model's rate
+    //    (what these tokens would have cost on whatever model we're using)
+    // 2. Routing: if using a cheaper model than Claude Sonnet, the price difference
+    //    (only applies to non-Claude providers)
+    //
+    // equiv = actual + compression_savings + routing_savings
+    // This guarantees equiv >= actual (savings are never negative).
+
+    let compression_savings = (tokens_saved_by_compression as f64 / 1_000_000.0) * pricing.0;
+
+    let routing_savings = if provider != "claude" {
+        let claude_pricing = get_pricing("claude", "claude-sonnet-4-20250514");
+        let claude_cost = (input_tokens as f64 / 1_000_000.0) * claude_pricing.0
+            + (output_tokens as f64 / 1_000_000.0) * claude_pricing.1;
+        (claude_cost - actual).max(0.0)
+    } else {
+        0.0
+    };
+
+    let total_savings = compression_savings + routing_savings;
+    let equiv = actual + total_savings;
 
     CostResult {
         actual_cost: actual,
         claude_equiv_cost: equiv,
-        savings: equiv - actual,
+        savings: total_savings,
     }
 }
 
@@ -61,7 +80,6 @@ pub fn get_pricing(provider: &str, model: &str) -> (f64, f64) {
 
     // OpenRouter — try to match by model name
     if provider == "openrouter" || provider.starts_with("openrouter") {
-        // Common OpenRouter models
         if m.contains("deepseek") { return (0.27, 1.10); }
         if m.contains("llama") && m.contains("405") { return (0.80, 0.80); }
         if m.contains("llama") && m.contains("70") { return (0.40, 0.40); }
@@ -73,7 +91,6 @@ pub fn get_pricing(provider: &str, model: &str) -> (f64, f64) {
         if m.contains("gemini") && m.contains("pro") { return (1.25, 5.00); }
         if m.contains("gemini") && m.contains("flash") { return (0.075, 0.30); }
         if m.contains("qwen") { return (0.15, 0.60); }
-        // Default OpenRouter pricing (budget model)
         return (0.50, 1.00);
     }
 
@@ -91,33 +108,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_deepseek_cost() {
+    fn test_deepseek_routing_savings() {
         let r = calculate("deepseek", "deepseek-chat", 10_000, 1_000);
-        assert!((r.actual_cost - 0.0038).abs() < 0.001); // 10K*0.27/1M + 1K*1.10/1M
+        assert!((r.actual_cost - 0.0038).abs() < 0.001);
         assert!(r.claude_equiv_cost > r.actual_cost);
         assert!(r.savings > 0.0);
     }
 
     #[test]
     fn test_claude_no_compression_no_savings() {
-        // Without compression, Claude actual == equiv, so savings = 0
         let r = calculate("claude", "claude-sonnet-4-20250514", 10_000, 1_000);
         assert!(r.actual_cost > 0.0);
         assert_eq!(r.savings, 0.0);
     }
 
     #[test]
-    fn test_claude_with_compression_shows_savings() {
-        // With compression: we sent 10K tokens but compressed away 5K
-        // equiv should be based on 15K (what it would have been without compression)
+    fn test_claude_sonnet_with_compression() {
+        // Sonnet: 5K tokens compressed away at $3/M = $0.015 savings
         let r = calculate_with_compression("claude", "claude-sonnet-4-20250514", 10_000, 1_000, 5_000);
-        assert!(r.actual_cost > 0.0);
-        assert!(r.claude_equiv_cost > r.actual_cost); // Equiv includes the compressed-away tokens
-        assert!(r.savings > 0.0); // Now shows savings even in Claude-only mode!
+        assert!(r.savings > 0.0);
+        assert!(r.claude_equiv_cost > r.actual_cost);
+        let expected = 5_000.0 * 3.0 / 1_000_000.0;
+        assert!((r.savings - expected).abs() < 0.001);
+    }
 
-        // Verify: savings should be ~5K tokens * $3/M = $0.015
-        let expected_comp_savings = 5_000.0 * 3.0 / 1_000_000.0;
-        assert!((r.savings - expected_comp_savings).abs() < 0.001);
+    #[test]
+    fn test_claude_opus_with_compression_never_negative() {
+        // Opus ($15/$75): 5K tokens compressed = $0.075 savings
+        // Must NOT go negative
+        let r = calculate_with_compression("claude", "claude-opus-4-20250514", 10_000, 1_000, 5_000);
+        assert!(r.savings > 0.0);
+        assert!(r.claude_equiv_cost >= r.actual_cost);
+        let expected = 5_000.0 * 15.0 / 1_000_000.0;
+        assert!((r.savings - expected).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_claude_opus_no_compression_zero_savings() {
+        // Opus with no compression = zero savings (no routing savings for Claude)
+        let r = calculate("claude", "claude-opus-4-20250514", 10_000, 1_000);
+        assert_eq!(r.savings, 0.0);
+        assert_eq!(r.claude_equiv_cost, r.actual_cost);
     }
 
     #[test]
@@ -129,9 +160,31 @@ mod tests {
     }
 
     #[test]
-    fn test_openrouter_cost() {
-        let r = calculate("openrouter", "deepseek/deepseek-chat", 10_000, 1_000);
-        assert!(r.actual_cost > 0.0);
-        assert!(r.savings > 0.0);
+    fn test_deepseek_with_compression_saves_more() {
+        let no_comp = calculate("deepseek", "deepseek-chat", 10_000, 1_000);
+        let with_comp = calculate_with_compression("deepseek", "deepseek-chat", 10_000, 1_000, 5_000);
+        assert!(with_comp.savings > no_comp.savings);
+    }
+
+    #[test]
+    fn test_equiv_always_gte_actual() {
+        // For ANY provider with ANY compression, equiv must be >= actual
+        for (prov, model) in &[
+            ("claude", "claude-opus-4-20250514"),
+            ("claude", "claude-sonnet-4-20250514"),
+            ("claude", "claude-haiku-4-5-20251001"),
+            ("deepseek", "deepseek-chat"),
+            ("local-ollama", "qwen3:8b"),
+            ("openrouter", "deepseek/deepseek-chat"),
+        ] {
+            for comp in &[0u64, 1000, 10000, 50000] {
+                let r = calculate_with_compression(prov, model, 10_000, 1_000, *comp);
+                assert!(
+                    r.claude_equiv_cost >= r.actual_cost,
+                    "equiv < actual for {} {} comp={}: equiv={} actual={}",
+                    prov, model, comp, r.claude_equiv_cost, r.actual_cost
+                );
+            }
+        }
     }
 }
