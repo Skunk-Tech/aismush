@@ -7,6 +7,7 @@ mod cost;
 mod dashboard;
 mod db;
 mod deps;
+#[allow(dead_code)]
 mod discovery;
 mod embeddings;
 mod file_cache;
@@ -14,7 +15,9 @@ mod forward;
 mod hashes;
 mod memory;
 mod prompts;
+#[allow(dead_code)]
 mod provider;
+#[allow(dead_code)]
 mod router;
 mod scan;
 mod search;
@@ -22,6 +25,7 @@ mod setup;
 mod state;
 mod summarize;
 mod tokens;
+#[allow(dead_code)]
 mod transform;
 
 use bytes::Bytes;

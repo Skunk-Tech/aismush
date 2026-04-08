@@ -81,7 +81,8 @@ pub async fn claude(
         .uri(format!("https://api.anthropic.com{}", path));
 
     for (k, v) in &parts.headers {
-        if k == "host" || k == "connection" { continue; }
+        // Skip headers that we set ourselves or that are invalid after body modification
+        if k == "host" || k == "connection" || k == "content-length" { continue; }
         builder = builder.header(k, v);
     }
     builder = builder.header("host", "api.anthropic.com");

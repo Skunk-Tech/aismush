@@ -253,7 +253,7 @@ fn compress_cargo_build(text: &str) -> String {
 fn compress_git_status(text: &str) -> String {
     let mut branch = String::new();
     let mut modified: Vec<String> = Vec::new();
-    let mut added: Vec<String> = Vec::new();
+    let _added: Vec<String> = Vec::new();
     let mut deleted: Vec<String> = Vec::new();
     let mut untracked: Vec<String> = Vec::new();
     let mut staged: Vec<String> = Vec::new();
@@ -327,14 +327,12 @@ fn compress_git_status(text: &str) -> String {
 
 fn compress_git_diff(text: &str) -> String {
     let mut result = String::new();
-    let mut current_file = String::new();
 
     for line in text.lines() {
         // Extract file path from diff header
         if line.starts_with("diff --git") {
             if let Some(path) = line.split(" b/").last() {
-                current_file = path.to_string();
-                result.push_str(&format!("--- {} ---\n", current_file));
+                result.push_str(&format!("--- {} ---\n", path));
             }
             continue;
         }

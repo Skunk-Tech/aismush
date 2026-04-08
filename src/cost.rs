@@ -10,6 +10,7 @@ pub struct CostResult {
 ///
 /// `input_tokens`/`output_tokens` are the actual token counts (post-compression).
 /// To calculate what the request would have cost WITHOUT AISmush, use `calculate_with_compression`.
+#[allow(dead_code)]
 pub fn calculate(provider: &str, model: &str, input_tokens: u64, output_tokens: u64) -> CostResult {
     calculate_with_compression(provider, model, input_tokens, output_tokens, 0)
 }

@@ -340,7 +340,7 @@ fn determine_min_tier(signals: &RoutingSignals, blast_threshold: f64) -> Tier {
 }
 
 /// Format a human-readable reason string for the routing decision.
-fn format_reason(signals: &RoutingSignals, tier: Tier) -> String {
+fn format_reason(signals: &RoutingSignals, _tier: Tier) -> String {
     let task = signals.task_type.as_str();
     if let Some(score) = signals.blast_radius_score {
         if score > 0.5 {
