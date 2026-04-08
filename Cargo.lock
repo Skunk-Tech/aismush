@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "aismush"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "bytes",
  "http-body-util",

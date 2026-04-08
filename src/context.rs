@@ -166,18 +166,44 @@ fn trim_old_messages(body: &mut Value, target_tokens: usize) {
         return;
     }
 
-    // Remove messages from the middle until we're under budget
+    // Remove messages from the middle until we're under budget.
+    // CRITICAL: always remove in PAIRS (assistant + user) to preserve
+    // tool_use/tool_result pairing. Removing one without the other causes
+    // Claude API 400 "tool use concurrency" errors.
     let mut to_remove = Vec::new();
     let mut removed_tokens = 0usize;
     let tokens_to_shed = current - target_tokens;
 
-    for i in keep_start..removable_end {
+    let mut i = keep_start;
+    while i < removable_end {
         if removed_tokens >= tokens_to_shed {
             break;
         }
-        let msg_size = serde_json::to_string(&messages[i]).map(|s| s.len() / 4).unwrap_or(0);
-        removed_tokens += msg_size;
-        to_remove.push(i);
+
+        // Check if this is an assistant message with tool_use
+        let has_tool_use = messages[i].get("role").and_then(|r| r.as_str()) == Some("assistant")
+            && messages[i].get("content").and_then(|c| c.as_array()).map_or(false, |blocks| {
+                blocks.iter().any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+            });
+
+        if has_tool_use && i + 1 < removable_end {
+            // Remove the pair together (assistant tool_use + user tool_result)
+            let size_a = serde_json::to_string(&messages[i]).map(|s| s.len() / 4).unwrap_or(0);
+            let size_b = serde_json::to_string(&messages[i + 1]).map(|s| s.len() / 4).unwrap_or(0);
+            removed_tokens += size_a + size_b;
+            to_remove.push(i);
+            to_remove.push(i + 1);
+            i += 2;
+        } else if has_tool_use {
+            // Tool use at boundary without its result — skip it (don't orphan it)
+            i += 1;
+        } else {
+            // Regular message (no tool_use) — safe to remove individually
+            let msg_size = serde_json::to_string(&messages[i]).map(|s| s.len() / 4).unwrap_or(0);
+            removed_tokens += msg_size;
+            to_remove.push(i);
+            i += 1;
+        }
     }
 
     if to_remove.is_empty() {
