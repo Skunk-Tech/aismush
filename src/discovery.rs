@@ -163,37 +163,46 @@ fn extract_model_info(server: &KnownServer, body: &str) -> (String, usize) {
 }
 
 /// Register discovered servers into the provider registry.
+/// IMPORTANT: Health updates happen AFTER releasing the registry lock to avoid deadlocks.
 pub async fn register_discovered(registry: &RwLock<ProviderRegistry>, servers: &[DiscoveredServer]) {
-    let mut reg = registry.write().await;
-    for server in servers {
-        let id = format!("local-{}", server.name);
+    // Collect providers that need health updates — do NOT update while holding the lock
+    let mut to_mark_healthy: Vec<Arc<ProviderConfig>> = Vec::new();
 
-        // Don't re-register if already present
-        if reg.has_provider(&id) {
-            // Update health to healthy since we just discovered it
-            if let Some(p) = reg.get(&id) {
-                p.mark_healthy().await;
+    {
+        let mut reg = registry.write().await;
+        for server in servers {
+            let id = format!("local-{}", server.name);
+
+            if reg.has_provider(&id) {
+                if let Some(p) = reg.get(&id) {
+                    to_mark_healthy.push(p);
+                }
+                continue;
             }
-            continue;
+
+            reg.register(
+                ProviderConfig::new(
+                    &id,
+                    ProviderKind::OpenAICompat,
+                    &server.url,
+                    None,
+                    &server.model,
+                )
+                .with_tier(Tier::Free)
+                .with_pricing(0.0, 0.0)
+                .with_context_window(server.context_window)
+                .with_max_output(4096)
+                .with_tools(false)
+                .with_auto_discovered(true)
+            );
+
+            info!(id = %id, model = %server.model, url = %server.url, "Registered auto-discovered provider");
         }
+    } // registry write lock dropped here
 
-        reg.register(
-            ProviderConfig::new(
-                &id,
-                ProviderKind::OpenAICompat,
-                &server.url,
-                None, // local servers don't need API keys
-                &server.model,
-            )
-            .with_tier(Tier::Free)
-            .with_pricing(0.0, 0.0)
-            .with_context_window(server.context_window)
-            .with_max_output(4096)
-            .with_tools(false) // conservative — most local models don't handle tools well
-            .with_auto_discovered(true)
-        );
-
-        info!(id = %id, model = %server.model, url = %server.url, "Registered auto-discovered provider");
+    // Now safe to update health states without holding the registry lock
+    for p in to_mark_healthy {
+        p.mark_healthy();
     }
 }
 
@@ -216,9 +225,9 @@ pub async fn discovery_loop(
         let discovered_names: Vec<String> = discovered.iter().map(|d| format!("local-{}", d.name)).collect();
         for provider in &reg.providers {
             if provider.auto_discovered && !discovered_names.contains(&provider.id) {
-                if provider.is_healthy().await {
+                if provider.is_healthy() {
                     warn!(provider = %provider.id, "Auto-discovered provider no longer responding");
-                    provider.mark_down().await;
+                    provider.mark_down();
                 }
             }
         }

@@ -5,7 +5,14 @@
 
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::RwLock;
+
+// Use std::sync::RwLock (NOT tokio::sync::RwLock) for HealthState.
+// This is critical: HealthState is checked inside async functions that already
+// hold the tokio registry RwLock. Using tokio RwLock for both causes deadlocks
+// because tokio RwLock yields to the runtime, allowing the discovery loop to
+// acquire the registry write lock while a request handler holds the read lock
+// and is waiting on HealthState.
+use std::sync::RwLock;
 
 /// The two API protocol families we support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,16 +172,16 @@ impl ProviderConfig {
         self
     }
 
-    pub async fn is_healthy(&self) -> bool {
-        self.health.read().await.is_healthy()
+    pub fn is_healthy(&self) -> bool {
+        self.health.read().unwrap().is_healthy()
     }
 
-    pub async fn mark_healthy(&self) {
-        *self.health.write().await = HealthState::Healthy;
+    pub fn mark_healthy(&self) {
+        *self.health.write().unwrap() = HealthState::Healthy;
     }
 
-    pub async fn mark_error(&self) {
-        let mut health = self.health.write().await;
+    pub fn mark_error(&self) {
+        let mut health = self.health.write().unwrap();
         match &*health {
             HealthState::Healthy => {
                 *health = HealthState::Degraded {
@@ -205,8 +212,8 @@ impl ProviderConfig {
         }
     }
 
-    pub async fn mark_down(&self) {
-        *self.health.write().await = HealthState::Down {
+    pub fn mark_down(&self) {
+        *self.health.write().unwrap() = HealthState::Down {
             since: Instant::now(),
             last_check: Instant::now(),
         };
@@ -236,7 +243,7 @@ impl ProviderRegistry {
     pub async fn at_or_above_tier(&self, min_tier: Tier) -> Vec<Arc<ProviderConfig>> {
         let mut result = Vec::new();
         for p in &self.providers {
-            if p.tier >= min_tier && p.is_healthy().await {
+            if p.tier >= min_tier && p.is_healthy() {
                 result.push(p.clone());
             }
         }
@@ -256,7 +263,7 @@ impl ProviderRegistry {
             if p.tier >= min_tier
                 && p.context_window >= min_context
                 && (!needs_tools || p.supports_tools)
-                && p.is_healthy().await
+                && p.is_healthy()
             {
                 candidates.push(p.clone());
             }
@@ -282,7 +289,7 @@ impl ProviderRegistry {
             if p.id != exclude_id
                 && p.context_window >= min_context
                 && (!needs_tools || p.supports_tools)
-                && p.is_healthy().await
+                && p.is_healthy()
             {
                 chain.push(p.clone());
             }
@@ -308,7 +315,7 @@ impl ProviderRegistry {
     pub async fn status_report(&self) -> Vec<ProviderStatus> {
         let mut report = Vec::new();
         for p in &self.providers {
-            let health = p.health.read().await;
+            let health = p.health.read().unwrap();
             report.push(ProviderStatus {
                 id: p.id.clone(),
                 kind: p.kind,
@@ -446,18 +453,18 @@ mod tests {
     #[tokio::test]
     async fn test_health_state_transitions() {
         let provider = ProviderConfig::new("test", ProviderKind::OpenAICompat, "http://localhost", None, "test-model");
-        assert!(provider.is_healthy().await);
+        assert!(provider.is_healthy());
 
-        provider.mark_error().await;
-        assert!(provider.is_healthy().await); // still healthy after 1 error (degraded)
+        provider.mark_error();
+        assert!(provider.is_healthy()); // still healthy after 1 error (degraded)
 
-        provider.mark_error().await;
-        assert!(provider.is_healthy().await); // still degraded after 2
+        provider.mark_error();
+        assert!(provider.is_healthy()); // still degraded after 2
 
-        provider.mark_error().await;
-        assert!(!provider.is_healthy().await); // down after 3 errors
+        provider.mark_error();
+        assert!(!provider.is_healthy()); // down after 3 errors
 
-        provider.mark_healthy().await;
-        assert!(provider.is_healthy().await); // recovered
+        provider.mark_healthy();
+        assert!(provider.is_healthy()); // recovered
     }
 }
