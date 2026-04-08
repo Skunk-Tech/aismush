@@ -1,14 +1,16 @@
 # AISmush
 
-**Cut your AI coding costs by 90%+ without sacrificing quality.**
+**Make your Claude Code session limits last 10x longer.**
 
-AISmush is a transparent proxy that sits between Claude Code and the AI providers. It intelligently routes each turn to the best model for the job — Claude for complex reasoning, DeepSeek or OpenRouter for moderate tasks, local models (Ollama, LM Studio, etc.) for free mechanical work — while compressing context, managing memory across sessions, and tracking every dollar saved.
+AISmush is a transparent proxy that dramatically reduces token consumption in Claude Code. File caching, command-aware compression, structural summarization, and structured memory eliminate token waste without changing how you work. Add smart routing to DeepSeek, OpenRouter, or local models for even bigger savings.
 
-One binary. One setup command. Drop-in replacement that works with your existing Claude Code setup.
+One binary. One setup command. Claude Code doesn't even know it's there.
 
 ## The Problem
 
-Claude Code is incredible, but it's expensive. A heavy coding session can burn through $50-100+ in API costs. Most of those tokens are spent on mechanical tasks — reading files, processing tool results, making simple edits — that don't need Claude's full reasoning power.
+Anthropic is tightening Claude Code limits. Peak-hour session limits have been reduced. Users on $200/month Max plans report 5-hour limits burning out in under 90 minutes. Third-party tool access has been cut off entirely. The token economy is getting harder, not easier.
+
+Most of those tokens are wasted on mechanical tasks — re-reading files Claude already saw, processing 50-line test outputs when 2 lines would do, carrying dead context from 20 turns ago. AISmush eliminates that waste.
 
 ## The Solution
 
@@ -94,16 +96,20 @@ Prevents DeepSeek from choking on long conversations:
 
 For DeepSeek turns only, old tool results are truncated and messages trimmed if needed. Claude turns are never trimmed — this preserves tool_use/tool_result pairs that Claude requires.
 
-### Deep Memory — Full Conversation Capture & Search
-- **Captures every conversation** — user questions, AI responses, tool invocations, reasoning
-- **Local semantic search** — MiniLM-L6-v2 runs on your machine in ~10ms, finds conversations by meaning
-- "auth bug" finds conversations about "JWT validation" — semantic, not just keywords
-- **FTS5 keyword search** as supplement for exact matches
-- **Auto-injects relevant past context** into new sessions
+### Structured Memory — Your AI Remembers Everything
+Inspired by MemPalace's hierarchical approach to AI memory:
+
+- **Auto-classified memories** — each memory tagged by topic (auth, database, frontend, testing, deploy, config, api, build) and type (decision, discovery, preference, event, fact, observation)
+- **Importance scoring** — "decided to use React" (importance 2) prioritized over "read main.rs" (importance 0)
+- **Tiered injection with 300-token budget**:
+  - L0+L1: Critical facts always loaded (decisions, preferences, discoveries)
+  - L2: Topic-relevant memories when conversation matches
+  - L3: Recent conversation turns if budget remains
+- **Temporal validity** — ephemeral observations auto-expire after 7 days, decisions and discoveries persist forever
+- **Local semantic search** — MiniLM-L6-v2, ~10ms per query, no cloud
+- **Works in ALL modes** — including Claude-only direct mode (was previously skipped for Claude)
 - **Searchable via dashboard, CLI, and API** — `aismush --search "how did I fix the auth bug"`
-- Configurable retention (30 days default, or keep forever)
 - ~3KB per turn, ~260MB/year at heavy usage
-- **Your AI remembers everything — questions, answers, decisions, reasoning**
 
 ### Cost Tracking
 - Real-time cost calculation per request
