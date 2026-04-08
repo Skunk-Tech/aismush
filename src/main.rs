@@ -568,8 +568,8 @@ async fn handle(
         st.compressed_final_bytes += comp_stats.compressed_bytes as u64;
     }
 
-    // ── Memory injection (non-Claude providers — Claude gets unmodified body) ──
-    if route.provider != "claude" {
+    // ── Memory injection (ALL providers — budget-limited to ~300 tokens) ──
+    {
         if let (Some(ref db), Some(ref mut body_val)) = (&state.db, &mut parsed) {
             memory::inject_memories(db, body_val, &project_path).await;
         }

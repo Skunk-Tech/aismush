@@ -74,11 +74,22 @@ pub fn extract_observations(body: &Value) -> Vec<(String, String)> {
                         for line in text.lines() {
                             let t = line.trim();
                             if t.len() > 30 && t.len() < 200 {
-                                if t.contains("created") || t.contains("installed") ||
-                                   t.contains("configured") || t.contains("fixed") ||
-                                   t.contains("changed") || t.contains("updated") ||
-                                   t.contains("added") || t.contains("removed") ||
-                                   t.contains("migrated") || t.contains("refactored") {
+                                if t.contains("decided") || t.contains("chose") ||
+                                   t.contains("switched to") || t.contains("will use") ||
+                                   t.contains("going with") {
+                                    observations.push((t.to_string(), "decision".to_string()));
+                                } else if t.contains("fixed") || t.contains("resolved") ||
+                                          t.contains("found the bug") || t.contains("root cause") ||
+                                          t.contains("the issue was") || t.contains("realized") {
+                                    observations.push((t.to_string(), "discovery".to_string()));
+                                } else if t.contains("prefer") || t.contains("always use") ||
+                                          t.contains("convention") || t.contains("don't like") {
+                                    observations.push((t.to_string(), "preference".to_string()));
+                                } else if t.contains("created") || t.contains("installed") ||
+                                          t.contains("configured") || t.contains("changed") ||
+                                          t.contains("updated") || t.contains("added") ||
+                                          t.contains("removed") || t.contains("migrated") ||
+                                          t.contains("refactored") {
                                     observations.push((t.to_string(), "decision".to_string()));
                                 }
                             }
@@ -95,6 +106,80 @@ pub fn extract_observations(body: &Value) -> Vec<(String, String)> {
     observations
 }
 
+/// Classify the topic of a memory based on its content.
+pub fn classify_topic(content: &str) -> &'static str {
+    let lower = content.to_lowercase();
+    if lower.contains("auth") || lower.contains("login") || lower.contains("jwt") ||
+       lower.contains("token") && lower.contains("session") || lower.contains("password") || lower.contains("oauth") {
+        return "auth";
+    }
+    if lower.contains("database") || lower.contains("sql") || lower.contains("migration") ||
+       lower.contains("schema") || lower.contains("query") || lower.contains("sqlite") || lower.contains("postgres") {
+        return "database";
+    }
+    if lower.contains("frontend") || lower.contains("react") || lower.contains("vue") ||
+       lower.contains("css") || lower.contains("html") || lower.contains("component") ||
+       lower.contains("dashboard") && lower.contains("ui") {
+        return "frontend";
+    }
+    if lower.contains("test") || lower.contains("assert") || lower.contains("cargo test") ||
+       lower.contains("jest") || lower.contains("pytest") || lower.contains("spec") {
+        return "testing";
+    }
+    if lower.contains("deploy") || lower.contains("release") || lower.contains("ci") ||
+       lower.contains("docker") || lower.contains("kubernetes") || lower.contains("production") {
+        return "deploy";
+    }
+    if lower.contains("config") || lower.contains("env") || lower.contains("setting") ||
+       lower.contains("toml") || lower.contains(".yaml") || lower.contains("json config") {
+        return "config";
+    }
+    if lower.contains("api") || lower.contains("endpoint") || lower.contains("route") ||
+       lower.contains("handler") || lower.contains("request") && lower.contains("response") {
+        return "api";
+    }
+    if lower.contains("build") || lower.contains("compile") || lower.contains("cargo") ||
+       lower.contains("npm") || lower.contains("webpack") {
+        return "build";
+    }
+    ""
+}
+
+/// Classify the type of a memory.
+fn classify_type(content: &str, category: &str) -> &'static str {
+    let lower = content.to_lowercase();
+    if category == "decision" || lower.contains("decided") || lower.contains("chose") ||
+       lower.contains("switched to") || lower.contains("will use") || lower.contains("going with") {
+        return "decision";
+    }
+    if category == "discovery" || lower.contains("fixed") || lower.contains("resolved") ||
+       lower.contains("found the bug") || lower.contains("root cause") {
+        return "discovery";
+    }
+    if category == "preference" || lower.contains("prefer") || lower.contains("always use") ||
+       lower.contains("convention") || lower.contains("don't like") {
+        return "preference";
+    }
+    if lower.contains("released") || lower.contains("deployed") || lower.contains("completed") ||
+       lower.contains("milestone") || lower.contains("launched") {
+        return "event";
+    }
+    if category == "exploration" || category == "command" {
+        return "observation";
+    }
+    "fact"
+}
+
+/// Score the importance of a memory (0=ephemeral, 1=normal, 2=important, 3=critical).
+fn classify_importance(memory_type: &str, content: &str) -> i32 {
+    match memory_type {
+        "decision" | "discovery" | "preference" => 2,
+        "event" => 1,
+        "fact" => if content.len() > 50 { 1 } else { 0 },
+        _ => 0, // observation
+    }
+}
+
 /// Store pre-extracted observations in the database (background task).
 pub async fn store_observations(db: &Db, project_path: &str, observations: Vec<(String, String)>) {
     if observations.is_empty() {
@@ -108,11 +193,16 @@ pub async fn store_observations(db: &Db, project_path: &str, observations: Vec<(
     tokio::task::spawn_blocking(move || {
         let conn = db.blocking_lock();
         for (content, category) in &observations {
+            let topic = classify_topic(content);
+            let memory_type = classify_type(content, category);
+            let importance = classify_importance(memory_type, content);
+
             match conn.execute(
-                "INSERT OR IGNORE INTO memories (project_path, content, category) VALUES (?1, ?2, ?3)",
-                params![project, content, category],
+                "INSERT OR IGNORE INTO memories (project_path, content, category, topic, memory_type, importance, valid_from)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%s','now'))",
+                params![project, content, category, topic, memory_type, importance],
             ) {
-                Ok(1) => debug!(content = &content[..content.len().min(60)], "Memory stored"),
+                Ok(1) => debug!(content = &content[..content.len().min(60)], topic, memory_type, importance, "Memory stored"),
                 Ok(_) => {}
                 Err(e) => warn!(error = %e, "Failed to store memory"),
             }
@@ -125,58 +215,71 @@ pub async fn store_observations(db: &Db, project_path: &str, observations: Vec<(
 }
 
 /// Inject relevant context from past conversations into the system prompt.
-/// Uses deep memory (turns table) first, falls back to old memories table.
+/// Uses a tiered approach with a strict token budget:
+///   L0+L1: Critical facts (decisions, preferences, discoveries) — always loaded
+///   L2: Topic-relevant memories — loaded if the current topic matches
+///   L3: Recent conversation turns — loaded if budget remains
+///
+/// Total budget: ~300 tokens (1200 chars). This is small enough for any provider.
 pub async fn inject_memories(db: &Db, body: &mut Value, project_path: &str) {
-    // Try deep memory first (recent conversation turns)
-    let deep_context = get_recent_turns(db, project_path).await;
+    const MAX_CHARS: usize = 1200; // ~300 tokens
 
-    // Fall back to old memories table if no turns
-    let old_memories = if deep_context.is_empty() {
-        get_relevant_memories(db, project_path).await
+    // Detect current topic from the last user message
+    let current_topic = extract_user_topic(body);
+
+    // L0+L1: Critical memories (importance >= 2: decisions, preferences, discoveries)
+    let critical = fetch_critical_memories(db, project_path).await;
+
+    // L2: Topic-relevant memories (if we detected a topic)
+    let topic_mems = if !current_topic.is_empty() {
+        fetch_topic_memories(db, project_path, &current_topic).await
     } else {
         Vec::new()
     };
 
-    if deep_context.is_empty() && old_memories.is_empty() {
+    // L3: Recent turns
+    let recent = get_recent_turns(db, project_path).await;
+
+    if critical.is_empty() && topic_mems.is_empty() && recent.is_empty() {
         return;
     }
 
-    let mut memory_text = String::from("[Context from previous sessions:]\n");
+    let mut memory_text = String::from("[Project context:]\n");
+    let mut count = 0;
 
-    // Deep memory: recent conversation turns with actual reasoning
-    if !deep_context.is_empty() {
-        memory_text.push_str("\nRecent work:\n");
-        for (user_msg, asst_snippet, tools, age) in &deep_context {
-            memory_text.push_str(&format!("  [{}] You: {}\n", age, user_msg));
-            if !asst_snippet.is_empty() {
-                memory_text.push_str(&format!("    AI: {}\n", asst_snippet));
-            }
-            if !tools.is_empty() {
-                memory_text.push_str(&format!("    Tools: {}\n", tools));
-            }
+    // L0+L1: Always inject critical facts
+    for (content, memory_type) in &critical {
+        let line = format!("- [{}] {}\n", memory_type, content);
+        if memory_text.len() + line.len() > MAX_CHARS { break; }
+        memory_text.push_str(&line);
+        count += 1;
+    }
+
+    // L2: Topic-relevant (if budget remains)
+    if !topic_mems.is_empty() && memory_text.len() < MAX_CHARS - 100 {
+        memory_text.push_str(&format!("\n[{}:]\n", current_topic));
+        for (content, _) in &topic_mems {
+            let line = format!("- {}\n", content);
+            if memory_text.len() + line.len() > MAX_CHARS { break; }
+            memory_text.push_str(&line);
+            count += 1;
         }
     }
 
-    // Old memories as supplement
-    if !old_memories.is_empty() {
-        let mut by_category: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
-        for (content, category) in &old_memories {
-            by_category.entry(category.as_str()).or_default().push(content.as_str());
-        }
-        for (category, items) in &by_category {
-            memory_text.push_str(&format!("\n{}:\n", category));
-            for item in items.iter().take(5) {
-                memory_text.push_str(&format!("  - {}\n", item));
-            }
+    // L3: Recent turns (if budget remains)
+    if !recent.is_empty() && memory_text.len() < MAX_CHARS - 200 {
+        memory_text.push_str("\n[Recent:]\n");
+        for (user_msg, asst_snippet, _tools, age) in &recent {
+            let line = format!("  [{}] {}\n", age,
+                if !user_msg.is_empty() { user_msg } else { asst_snippet });
+            if memory_text.len() + line.len() > MAX_CHARS { break; }
+            memory_text.push_str(&line);
+            count += 1;
         }
     }
 
-    // Cap at ~3000 chars
-    if memory_text.len() > 3000 {
-        let mut end = 3000;
-        while end > 0 && !memory_text.is_char_boundary(end) { end -= 1; }
-        memory_text.truncate(end);
-        memory_text.push_str("\n[...more context available via search]");
+    if count == 0 {
+        return;
     }
 
     // Inject into system prompt
@@ -191,8 +294,75 @@ pub async fn inject_memories(db: &Db, body: &mut Value, project_path: &str) {
         }
     }
 
-    let count = deep_context.len() + old_memories.len();
-    info!(count, project = project_path, "Injected context");
+    info!(count, chars = memory_text.len(), topic = %current_topic, project = project_path, "Injected tiered context");
+}
+
+/// Extract the current conversation topic from the last user message.
+fn extract_user_topic(body: &Value) -> String {
+    if let Some(msgs) = body.get("messages").and_then(|m| m.as_array()) {
+        for msg in msgs.iter().rev() {
+            if msg.get("role").and_then(|r| r.as_str()) != Some("user") { continue; }
+            let text = match msg.get("content") {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Array(blocks)) => blocks.iter()
+                    .filter_map(|b| {
+                        if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            b.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                        } else { None }
+                    })
+                    .collect::<Vec<_>>().join(" "),
+                _ => continue,
+            };
+            if !text.is_empty() {
+                return classify_topic(&text).to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// Fetch critical memories (importance >= 2, still valid).
+async fn fetch_critical_memories(db: &Db, project_path: &str) -> Vec<(String, String)> {
+    let db = db.clone();
+    let project = project_path.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.blocking_lock();
+        let mut stmt = conn.prepare(
+            "SELECT content, memory_type FROM memories
+             WHERE project_path = ?1
+               AND importance >= 2
+               AND (valid_until = 0 OR valid_until > strftime('%s','now'))
+             ORDER BY importance DESC, relevance_score DESC
+             LIMIT 10"
+        ).ok()?;
+        let rows = stmt.query_map(params![project], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).ok()?;
+        Some(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+    }).await.ok().flatten().unwrap_or_default()
+}
+
+/// Fetch memories matching a specific topic (importance >= 1, still valid).
+async fn fetch_topic_memories(db: &Db, project_path: &str, topic: &str) -> Vec<(String, String)> {
+    let db = db.clone();
+    let project = project_path.to_string();
+    let topic = topic.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.blocking_lock();
+        let mut stmt = conn.prepare(
+            "SELECT content, memory_type FROM memories
+             WHERE project_path = ?1
+               AND topic = ?2
+               AND importance >= 1
+               AND (valid_until = 0 OR valid_until > strftime('%s','now'))
+             ORDER BY relevance_score DESC, last_accessed DESC
+             LIMIT 5"
+        ).ok()?;
+        let rows = stmt.query_map(params![project, topic], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).ok()?;
+        Some(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+    }).await.ok().flatten().unwrap_or_default()
 }
 
 /// Get recent conversation turns for this project (last 7 days, max 10).
@@ -254,35 +424,6 @@ async fn get_recent_turns(db: &Db, project_path: &str) -> Vec<(String, String, S
 }
 
 /// Query top memories by relevance and recency.
-async fn get_relevant_memories(db: &Db, project_path: &str) -> Vec<(String, String)> {
-    let db = db.clone();
-    let project = project_path.to_string();
-
-    tokio::task::spawn_blocking(move || {
-        let conn = db.blocking_lock();
-
-        let mut stmt = conn.prepare(
-            "SELECT content, category FROM memories
-             WHERE project_path = ?1
-             ORDER BY relevance_score * (1.0 / (1.0 + (strftime('%s','now') - last_accessed) / 604800.0)) DESC
-             LIMIT 30"
-        ).ok()?;
-
-        let rows = stmt.query_map(params![project], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        }).ok()?;
-
-        // Update access timestamps
-        conn.execute(
-            "UPDATE memories SET last_accessed = strftime('%s','now'), access_count = access_count + 1
-             WHERE project_path = ?1",
-            params![project],
-        ).ok();
-
-        Some(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
-    }).await.ok().flatten().unwrap_or_default()
-}
-
 /// Decay relevance scores on startup.
 pub async fn decay_scores(db: &Db) {
     let db = db.clone();
@@ -302,6 +443,8 @@ pub async fn decay_and_prune(db: &Db) {
         conn.execute("UPDATE memories SET relevance_score = relevance_score * 0.95", []).ok();
         // Delete stale low-relevance memories (>30 days old, score < 0.1)
         conn.execute("DELETE FROM memories WHERE relevance_score < 0.1 AND last_accessed < strftime('%s','now') - 2592000", []).ok();
+        // Expire ephemeral observations older than 7 days
+        conn.execute("UPDATE memories SET valid_until = strftime('%s','now') WHERE memory_type = 'observation' AND valid_until = 0 AND created_at < strftime('%s','now') - 604800", []).ok();
         // Prune old turns without embeddings (>90 days)
         conn.execute("DELETE FROM turns WHERE embedding IS NULL AND timestamp < strftime('%s','now') - 7776000", []).ok();
         // Cap total turns to 10000 most recent
@@ -339,4 +482,69 @@ pub fn detect_project(body: &Value) -> String {
     }
 
     "default".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_classify_topic_auth() {
+        assert_eq!(classify_topic("Fix the JWT token validation"), "auth");
+        assert_eq!(classify_topic("Add OAuth login flow"), "auth");
+    }
+
+    #[test]
+    fn test_classify_topic_database() {
+        assert_eq!(classify_topic("Run the SQL migration"), "database");
+        assert_eq!(classify_topic("Fix SQLite query performance"), "database");
+    }
+
+    #[test]
+    fn test_classify_topic_testing() {
+        assert_eq!(classify_topic("cargo test is failing"), "testing");
+        assert_eq!(classify_topic("Add unit tests for the parser"), "testing");
+    }
+
+    #[test]
+    fn test_classify_topic_general() {
+        assert_eq!(classify_topic("hello world"), "");
+        assert_eq!(classify_topic("refactor the code"), "");
+    }
+
+    #[test]
+    fn test_classify_type_decision() {
+        assert_eq!(classify_type("decided to use React", ""), "decision");
+        assert_eq!(classify_type("switched to async/await", ""), "decision");
+        assert_eq!(classify_type("anything", "decision"), "decision");
+    }
+
+    #[test]
+    fn test_classify_type_discovery() {
+        assert_eq!(classify_type("fixed the null pointer bug", ""), "discovery");
+        assert_eq!(classify_type("root cause was a race condition", ""), "discovery");
+    }
+
+    #[test]
+    fn test_classify_type_preference() {
+        assert_eq!(classify_type("prefer snake_case for Rust", ""), "preference");
+        assert_eq!(classify_type("always use explicit types", ""), "preference");
+    }
+
+    #[test]
+    fn test_classify_type_observation() {
+        assert_eq!(classify_type("Read src/main.rs", "exploration"), "observation");
+        assert_eq!(classify_type("ran cargo build", "command"), "observation");
+    }
+
+    #[test]
+    fn test_classify_importance() {
+        assert_eq!(classify_importance("decision", "anything"), 2);
+        assert_eq!(classify_importance("discovery", "anything"), 2);
+        assert_eq!(classify_importance("preference", "anything"), 2);
+        assert_eq!(classify_importance("event", "anything"), 1);
+        assert_eq!(classify_importance("observation", "anything"), 0);
+        assert_eq!(classify_importance("fact", "short"), 0);
+        assert_eq!(classify_importance("fact", "this is a longer fact that should have importance 1 because its over fifty chars"), 1);
+    }
 }

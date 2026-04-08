@@ -200,6 +200,22 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         )?;
     }
 
+    if version < 5 {
+        info!("Running migration v5: structured memory (topic, type, importance, temporal validity)");
+        conn.execute_batch(
+            "ALTER TABLE memories ADD COLUMN topic TEXT DEFAULT '';
+             ALTER TABLE memories ADD COLUMN memory_type TEXT DEFAULT 'observation';
+             ALTER TABLE memories ADD COLUMN importance INTEGER DEFAULT 0;
+             ALTER TABLE memories ADD COLUMN valid_from INTEGER DEFAULT 0;
+             ALTER TABLE memories ADD COLUMN valid_until INTEGER DEFAULT 0;
+             CREATE INDEX IF NOT EXISTS idx_memories_topic ON memories(project_path, topic);
+             CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
+             CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC);
+             INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '5');
+            "
+        )?;
+    }
+
     Ok(())
 }
 
