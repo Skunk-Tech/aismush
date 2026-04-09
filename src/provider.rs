@@ -67,6 +67,7 @@ impl std::fmt::Display for Tier {
 pub enum HealthState {
     Healthy,
     Degraded { error_count: usize, last_error: Instant },
+    RateLimited { until: Instant, retry_after_secs: u64 },
     Down { since: Instant, last_check: Instant },
 }
 
@@ -78,11 +79,19 @@ impl Default for HealthState {
 
 impl HealthState {
     pub fn is_healthy(&self) -> bool {
-        matches!(self, HealthState::Healthy | HealthState::Degraded { .. })
+        match self {
+            HealthState::Healthy | HealthState::Degraded { .. } => true,
+            HealthState::RateLimited { until, .. } => Instant::now() >= *until,
+            HealthState::Down { .. } => false,
+        }
     }
 
     pub fn is_down(&self) -> bool {
         matches!(self, HealthState::Down { .. })
+    }
+
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, HealthState::RateLimited { until, .. } if Instant::now() < *until)
     }
 }
 
@@ -203,6 +212,9 @@ impl ProviderConfig {
                     };
                 }
             }
+            HealthState::RateLimited { .. } => {
+                // Don't override rate-limit with generic error
+            }
             HealthState::Down { since, .. } => {
                 *health = HealthState::Down {
                     since: *since,
@@ -210,6 +222,17 @@ impl ProviderConfig {
                 };
             }
         }
+    }
+
+    pub fn mark_rate_limited(&self, retry_after_secs: u64) {
+        *self.health.write().unwrap() = HealthState::RateLimited {
+            until: Instant::now() + std::time::Duration::from_secs(retry_after_secs),
+            retry_after_secs,
+        };
+    }
+
+    pub fn is_rate_limited(&self) -> bool {
+        self.health.read().unwrap().is_rate_limited()
     }
 
     pub fn mark_down(&self) {

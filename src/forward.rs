@@ -9,6 +9,7 @@ use std::time::Instant;
 use tracing::{debug, error, warn};
 
 use crate::capture;
+use crate::client::InboundFormat;
 use crate::cost;
 use crate::db;
 use crate::state::ProxyState;
@@ -17,6 +18,36 @@ use crate::transform;
 
 fn full(data: impl Into<Bytes>) -> BoxBody<Bytes, hyper::Error> {
     Full::new(data.into()).map_err(|n| match n {}).boxed()
+}
+
+/// Parse Anthropic SSE event blocks and convert to OpenAI SSE format.
+/// Input: raw SSE text containing `event: <type>\ndata: <json>\n\n` blocks.
+/// Returns converted OpenAI SSE text.
+fn convert_anthropic_sse_events(sse_buf: &mut String, converter: &mut transform::AnthropicToOpenAIStream) -> String {
+    let mut output = String::new();
+    // Process complete SSE event blocks (terminated by \n\n)
+    while let Some(pos) = sse_buf.find("\n\n") {
+        let block = sse_buf[..pos].to_string();
+        sse_buf.drain(..pos + 2);
+
+        let mut event_type = String::new();
+        let mut data = String::new();
+        for line in block.lines() {
+            if let Some(et) = line.strip_prefix("event: ") {
+                event_type = et.trim().to_string();
+            } else if let Some(d) = line.strip_prefix("data: ") {
+                data = d.to_string();
+            }
+        }
+
+        if !event_type.is_empty() && !data.is_empty() {
+            let events = converter.process_event(&event_type, &data);
+            for event in events {
+                output.push_str(&event);
+            }
+        }
+    }
+    output
 }
 
 /// Parse a single SSE event block, extracting usage and assistant text incrementally.
@@ -72,6 +103,8 @@ pub async fn claude(
     comp_original: u64,
     comp_final: u64,
     request_body: Option<&serde_json::Value>,
+    client_format: InboundFormat,
+    client_name: &str,
     state: &Arc<ProxyState>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
     let start = Instant::now();
@@ -148,16 +181,82 @@ pub async fn claude(
         }
     };
 
+    // ── Rate-limit detection ─────────────────────────────────────────
+    let resp = if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+        let retry_after = resp.headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(10);
+
+        // Mark Claude as rate-limited in registry
+        if let Some(provider) = state.registry.read().await.get("claude") {
+            provider.mark_rate_limited(retry_after);
+        }
+        state.rate_limit_pressure.store(
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        warn!(retry_after_secs = retry_after, "Claude rate-limited (429)");
+
+        // In direct mode with short wait: hold and retry once
+        if retry_after <= 5 && state.config.force_provider.as_deref() == Some("claude") {
+            warn!(wait_secs = retry_after, "Short rate-limit, retrying after wait");
+            tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
+
+            // Rebuild and retry the request
+            let mut retry_builder = Request::builder()
+                .method(parts.method.clone())
+                .uri(format!("https://api.anthropic.com{}", path));
+            for (k, v) in &parts.headers {
+                if k == "host" || k == "connection" || k == "content-length" { continue; }
+                retry_builder = retry_builder.header(k, v);
+            }
+            retry_builder = retry_builder.header("host", "api.anthropic.com");
+
+            match retry_builder.body(full(body.clone())) {
+                Ok(retry_req) => match state.client.request(retry_req).await {
+                    Ok(r) if r.status() != StatusCode::TOO_MANY_REQUESTS => {
+                        warn!("Retry after rate-limit succeeded");
+                        r
+                    }
+                    Ok(r) => {
+                        warn!("Retry still rate-limited, passing through");
+                        r
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Retry connection failed");
+                        return Ok(json_resp(StatusCode::BAD_GATEWAY,
+                            r#"{"error":"Claude retry after rate-limit failed"}"#));
+                    }
+                },
+                Err(_) => resp, // builder failed, pass original 429 through
+            }
+        } else {
+            resp // Long wait or multi-provider: pass through (router will pick fallback next time)
+        }
+    } else {
+        resp
+    };
+
     {
             let status = resp.status();
+            let needs_openai_conversion = client_format == InboundFormat::OpenAI;
             let mut rb = Response::builder().status(status);
-            for (k, v) in resp.headers() { rb = rb.header(k, v); }
+            if needs_openai_conversion {
+                // OpenAI clients expect these headers
+                rb = rb.header("content-type", "text/event-stream");
+                rb = rb.header("cache-control", "no-cache");
+            } else {
+                for (k, v) in resp.headers() { rb = rb.header(k, v); }
+            }
 
             let body_stream = resp.into_body();
             let state2 = state.clone();
             let model = model.to_string();
             let reason = route_reason.to_string();
             let project = project_path.to_string();
+            let client = client_name.to_string();
             let user_msg = request_body.and_then(|b| capture::extract_user_message(b)).unwrap_or_default();
             let tool_calls = request_body.map(|b| capture::extract_tool_calls(b)).unwrap_or_default();
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
@@ -168,22 +267,42 @@ pub async fn claude(
                 let mut assistant_text = String::with_capacity(4096);
                 let mut sse_buf = String::with_capacity(16384);
                 let mut stream = body_stream;
+                let mut openai_converter = if needs_openai_conversion {
+                    Some(transform::AnthropicToOpenAIStream::new(&model))
+                } else {
+                    None
+                };
+                let mut openai_sse_buf = String::new();
+
                 loop {
                     match stream.frame().await {
                         Some(Ok(frame)) => {
                             if let Some(data) = frame.data_ref() {
                                 total_bytes += data.len() as u64;
                                 if let Ok(text) = std::str::from_utf8(data) {
-                                    // Parse SSE events incrementally
+                                    // Parse SSE events incrementally for usage/text capture
                                     sse_buf.push_str(text);
                                     while let Some(pos) = sse_buf.find("\n\n") {
                                         let event_block = sse_buf[..pos].to_string();
                                         sse_buf.drain(..pos + 2);
                                         parse_sse_event(&event_block, &mut usage, &mut assistant_text);
                                     }
+
+                                    // Convert and send to client
+                                    if let Some(ref mut converter) = openai_converter {
+                                        openai_sse_buf.push_str(text);
+                                        let converted = convert_anthropic_sse_events(&mut openai_sse_buf, converter);
+                                        if !converted.is_empty() {
+                                            let out_frame = Frame::data(Bytes::from(converted));
+                                            if tx.send(Ok(out_frame)).await.is_err() { break; }
+                                        }
+                                    }
                                 }
                             }
-                            if tx.send(Ok(frame)).await.is_err() { break; }
+                            // Pass through raw frame for Anthropic clients
+                            if openai_converter.is_none() {
+                                if tx.send(Ok(frame)).await.is_err() { break; }
+                            }
                         }
                         Some(Err(e)) => { let _ = tx.send(Err(e)).await; break; }
                         None => break,
@@ -241,6 +360,7 @@ pub async fn claude(
                             input_tokens, output_tokens,
                             latency_ms: latency,
                             cost: costs.actual_cost,
+                            client: client.clone(),
                         }).await;
                     }
                 }
@@ -268,6 +388,8 @@ pub async fn deepseek(
     project_path: &str,
     comp_original: u64,
     comp_final: u64,
+    _client_format: InboundFormat,
+    client_name: &str,
     state: &Arc<ProxyState>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
     let start = Instant::now();
@@ -305,6 +427,23 @@ pub async fn deepseek(
         Ok(resp) => {
             let status = resp.status();
 
+            // Rate-limit detection
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                let retry_after = resp.headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(10);
+                if let Some(provider) = state.registry.read().await.get("deepseek") {
+                    provider.mark_rate_limited(retry_after);
+                }
+                state.rate_limit_pressure.store(
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+                warn!(retry_after_secs = retry_after, "DeepSeek rate-limited (429)");
+            }
+
             // If DeepSeek returns server error, return clear error message
             if status.as_u16() >= 500 {
                 let err_body = resp.into_body().collect().await
@@ -325,6 +464,7 @@ pub async fn deepseek(
             let model = model.to_string();
             let reason = route_reason.to_string();
             let project = project_path.to_string();
+            let client = client_name.to_string();
             let ds_user_msg = parsed.as_ref().and_then(|b| capture::extract_user_message(b)).unwrap_or_default();
             let ds_tool_calls = parsed.as_ref().map(|b| capture::extract_tool_calls(b)).unwrap_or_default();
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
@@ -402,6 +542,7 @@ pub async fn deepseek(
                             input_tokens, output_tokens,
                             latency_ms: latency,
                             cost: costs.actual_cost,
+                            client: client.clone(),
                         }).await;
                     }
                 }
@@ -429,6 +570,7 @@ pub async fn deepseek(
 ///
 /// Converts the Anthropic-format request to OpenAI format, streams the response,
 /// and converts the OpenAI SSE back to Anthropic SSE for Claude Code.
+/// If the client sent OpenAI format, passes through the upstream OpenAI SSE directly.
 pub async fn openai_compat(
     parsed: &Option<Value>,
     provider_id: &str,
@@ -439,6 +581,8 @@ pub async fn openai_compat(
     project_path: &str,
     comp_original: u64,
     comp_final: u64,
+    client_format: InboundFormat,
+    client_name: &str,
     state: &Arc<ProxyState>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
     let start = Instant::now();
@@ -489,6 +633,23 @@ pub async fn openai_compat(
         Ok(resp) => {
             let status = resp.status();
 
+            // Rate-limit detection
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                let retry_after = resp.headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(10);
+                if let Some(provider) = state.registry.read().await.get(provider_id) {
+                    provider.mark_rate_limited(retry_after);
+                }
+                state.rate_limit_pressure.store(
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+                warn!(retry_after_secs = retry_after, provider = provider_id, "Provider rate-limited (429)");
+            }
+
             if status.as_u16() >= 500 {
                 let err_body = resp.into_body().collect().await
                     .map(|b| String::from_utf8_lossy(&b.to_bytes()).to_string())
@@ -500,13 +661,15 @@ pub async fn openai_compat(
                 )));
             }
 
-            // Stream response, converting OpenAI SSE -> Anthropic SSE
+            // Stream response — convert OpenAI SSE → Anthropic SSE unless client sent OpenAI
+            let pass_through_openai = client_format == InboundFormat::OpenAI;
             let body_stream = resp.into_body();
             let state2 = state.clone();
             let provider_id = provider_id.to_string();
             let model = target_model.to_string();
             let reason = route_reason.to_string();
             let project = project_path.to_string();
+            let client = client_name.to_string();
             let user_msg = parsed.as_ref().and_then(|b| capture::extract_user_message(b)).unwrap_or_default();
             let tool_calls = parsed.as_ref().map(|b| capture::extract_tool_calls(b)).unwrap_or_default();
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
@@ -539,8 +702,7 @@ pub async fn openai_compat(
                                             continue;
                                         };
 
-                                        // Extract assistant text from OpenAI chunk BEFORE conversion
-                                        // (much more reliable than parsing from converted SSE events)
+                                        // Extract assistant text from OpenAI chunk
                                         if data_str != "[DONE]" {
                                             if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data_str) {
                                                 if let Some(choices) = chunk.get("choices").and_then(|c| c.as_array()) {
@@ -556,12 +718,20 @@ pub async fn openai_compat(
                                             }
                                         }
 
-                                        // Convert OpenAI SSE -> Anthropic SSE
-                                        let anthropic_events = converter.process_chunk(data_str);
-                                        for event in &anthropic_events {
-                                            let event_bytes = Bytes::from(event.clone());
-                                            if tx.send(Ok(Frame::data(event_bytes))).await.is_err() {
+                                        if pass_through_openai {
+                                            // Client sent OpenAI format → pass upstream OpenAI SSE directly
+                                            let pass_line = format!("data: {}\n\n", data_str);
+                                            if tx.send(Ok(Frame::data(Bytes::from(pass_line)))).await.is_err() {
                                                 return;
+                                            }
+                                        } else {
+                                            // Convert OpenAI SSE -> Anthropic SSE for Anthropic clients
+                                            let anthropic_events = converter.process_chunk(data_str);
+                                            for event in &anthropic_events {
+                                                let event_bytes = Bytes::from(event.clone());
+                                                if tx.send(Ok(Frame::data(event_bytes))).await.is_err() {
+                                                    return;
+                                                }
                                             }
                                         }
                                     }
@@ -577,9 +747,14 @@ pub async fn openai_compat(
                 if !sse_buf.is_empty() {
                     let line = sse_buf.trim().to_string();
                     if let Some(data_str) = line.strip_prefix("data: ") {
-                        let events = converter.process_chunk(data_str);
-                        for event in events {
-                            let _ = tx.send(Ok(Frame::data(Bytes::from(event)))).await;
+                        if pass_through_openai {
+                            let pass_line = format!("data: {}\n\n", data_str);
+                            let _ = tx.send(Ok(Frame::data(Bytes::from(pass_line)))).await;
+                        } else {
+                            let events = converter.process_chunk(data_str);
+                            for event in events {
+                                let _ = tx.send(Ok(Frame::data(Bytes::from(event)))).await;
+                            }
                         }
                     }
                 }
@@ -633,6 +808,7 @@ pub async fn openai_compat(
                             input_tokens, output_tokens,
                             latency_ms: latency,
                             cost: costs.actual_cost,
+                            client: client.clone(),
                         }).await;
                     }
                 }

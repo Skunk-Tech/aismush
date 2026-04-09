@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AISmush — The AI Coding Cost Killer</title>
-<meta name="description" content="Cut AI coding costs by 90%. Smart model routing, AI-generated project agents, context compression, persistent memory, and context window management. One binary. One command.">
+<title>AISmush — The Intelligence Layer for AI Coding Agents</title>
+<meta name="description" content="Cut AI coding costs by 90%. Works with Claude Code, Goose, and any Anthropic or OpenAI API client. Smart model routing, context compression, persistent memory. One binary. Universal compatibility.">
 <style>
 :root {
   --bg: #0a0e17; --card: #131926; --border: #1e2a3a;
@@ -181,6 +181,29 @@ a:hover { text-decoration: underline; }
 .sponsor { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
 .sponsor a { color: var(--yellow); }
 
+/* Works With */
+.works-with {
+  text-align: center; padding: 40px 0 20px;
+}
+.works-with h3 {
+  font-size: 12px; text-transform: uppercase; letter-spacing: 2px;
+  color: var(--dim); margin-bottom: 20px; font-family: var(--mono);
+}
+.works-with-row {
+  display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
+}
+.works-with-pill {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 999px; padding: 8px 18px; font-size: 14px;
+  color: var(--text); font-weight: 600;
+}
+.works-with-pill .pill-icon { font-size: 16px; }
+.works-with-pill.claude { border-color: rgba(168,85,247,0.5); color: var(--purple); }
+.works-with-pill.goose { border-color: rgba(63,185,80,0.5); color: var(--green); }
+.works-with-pill.anthropic { border-color: rgba(88,166,255,0.4); color: var(--blue); }
+.works-with-pill.openai { border-color: rgba(88,166,255,0.4); color: var(--blue); }
+
 @media (max-width: 768px) {
   .hero h1 { font-size: 36px; }
   .feature-block { grid-template-columns: 1fr; }
@@ -194,28 +217,43 @@ a:hover { text-decoration: underline; }
 
 <!-- HERO -->
 <div class="hero">
-  <h1>Stop Burning Money on <span class="highlight">AI Coding</span></h1>
-  <p class="subtitle">AISmush is a drop-in proxy that makes Claude Code 90% cheaper — without changing how you work.</p>
-  <p class="bold-claim">Real users. Real savings. $0.03 sessions that used to cost $30.</p>
+  <h1>The <span class="highlight">Intelligence Layer</span><br>for AI Coding Agents</h1>
+  <p class="subtitle">One proxy. Claude Code, Goose, or any AI agent — Anthropic or OpenAI API format. Slash costs by 90% without changing how you work.</p>
+  <p class="bold-claim">Any agent. Any API format. One binary. Real savings.</p>
   <div class="cta-row">
     <a class="btn btn-primary" href="https://github.com/Skunk-Tech/aismush">Get AISmush Free</a>
     <a class="btn btn-secondary" href="https://github.com/Skunk-Tech/aismush#quick-start">See How It Works</a>
   </div>
 </div>
 
+<!-- WORKS WITH -->
+<div class="container">
+<div class="works-with">
+  <h3>Works with every AI coding agent</h3>
+  <div class="works-with-row">
+    <span class="works-with-pill claude"><span class="pill-icon">◈</span> Claude Code</span>
+    <span class="works-with-pill goose"><span class="pill-icon">◈</span> Goose</span>
+    <span class="works-with-pill anthropic"><span class="pill-icon">◈</span> Any Anthropic API client</span>
+    <span class="works-with-pill openai"><span class="pill-icon">◈</span> Any OpenAI API client</span>
+  </div>
+</div>
+</div>
+
 <!-- ANNOUNCEMENT BANNER -->
 <div class="container">
 <div class="announcement">
-  <div class="new-badge">New in v0.6</div>
-  <h2>Plan Orchestrator</h2>
-  <p>Build a plan with Claude, say <strong style="color:#fff">"go"</strong>, and walk away. AISmush maps each step to a specialized agent, runs independent steps in parallel, and executes the entire plan autonomously.</p>
+  <div class="new-badge">v1.0 — Major Release</div>
+  <h2>AISmush Now Works With Every AI Agent</h2>
+  <p>AISmush was already great for Claude Code. Now it's <strong style="color:#fff">universal</strong>. Goose users, any Anthropic client, any OpenAI client — point it at <code style="color:var(--green);background:rgba(0,0,0,0.3);padding:1px 6px;border-radius:4px">localhost:1849</code> and every optimization kicks in automatically.</p>
   <div class="demo-flow">
-    <span class="you">You:</span> add authentication to the API<br>
-    <span class="ai">Claude:</span> <span style="color:var(--dim)">writes 5-step plan...</span><br>
-    <span class="you">You:</span> go<br>
-    <span class="ai">Orchestrator:</span> Step 1 <span style="color:var(--dim)">&rarr;</span> <span class="agent">rust-expert</span> &nbsp; Step 2 <span style="color:var(--dim)">&rarr;</span> <span class="agent">data-engineer</span><br>
-    <span style="color:var(--dim);padding-left:92px">Step 3 &rarr;</span> <span class="agent">backend-engineer</span> &nbsp; <span style="color:var(--dim)">Step 4,5 &rarr;</span> <span class="agent">test-runner</span><br>
-    <span class="ai">Done.</span> <span style="color:var(--dim)">5/5 passed. cargo test: 31 ok.</span>
+    <span class="you"># Claude Code</span> <span style="color:var(--dim)">(unchanged — already worked)</span><br>
+    <span class="ai">aismush-start</span><br><br>
+    <span class="you"># Goose — Anthropic format</span><br>
+    <span class="agent">ANTHROPIC_BASE_URL=http://localhost:1849 goose</span><br><br>
+    <span class="you"># Goose — OpenAI format</span><br>
+    <span class="agent">OPENAI_BASE_URL=http://localhost:1849/openai goose</span><br><br>
+    <span class="you"># Any custom client</span><br>
+    <span style="color:var(--dim)">Point your API base URL to </span><span class="ai">http://localhost:1849</span><span style="color:var(--dim)"> — done.</span>
   </div>
 </div>
 </div>
@@ -258,12 +296,13 @@ a:hover { text-decoration: underline; }
 <!-- PROBLEM -->
 <div class="container">
 <div class="problem">
-  <h2>Claude Code is incredible. The bill isn't.</h2>
-  <p>A heavy coding session burns through $20-50 in API costs. Most of those tokens are spent on mechanical tasks — reading files, processing tool results, making simple edits — that don't need Claude's $15/M token brain.</p>
+  <h2>Every AI coding agent has the same cost problem.</h2>
+  <p>Whether you use Claude Code, Goose, or any other agent, a heavy coding session burns $20-50 in API costs. Most tokens go to mechanical work — reading files, processing tool results, making simple edits — that doesn't need frontier-model pricing.</p>
+  <p style="font-size:16px">AISmush sits between your agent and the API. It doesn't care which agent you're using. It just makes every session cheaper.</p>
   <div class="cost-compare">
     <div class="cost-box before">
       <div class="price">$30+</div>
-      <div class="desc">Typical session<br>100% Claude</div>
+      <div class="desc">Typical session<br>any AI agent</div>
     </div>
     <div class="cost-arrow">→</div>
     <div class="cost-box after">
@@ -327,13 +366,17 @@ a:hover { text-decoration: underline; }
       </ul>
     </div>
     <div class="feature-visual">
-      <span class="comment"># What happens behind the scenes:</span><br><br>
+      <span class="comment"># Works the same for any agent:</span><br><br>
+      <span class="purple">Claude Code</span> <span class="comment">or</span> <span class="cmd">Goose</span> <span class="comment">or any client</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&darr;<br>
+      <span class="highlight">AISmush proxy</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&darr;<br><br>
+      <span class="comment"># Routing decisions per turn:</span><br>
       "Plan the auth system" → <span class="purple">Claude</span> <span class="comment">($0.45)</span><br>
       Tool result: Read file → <span class="cmd">DeepSeek</span> <span class="comment">($0.001)</span><br>
       Tool result: Edit file → <span class="cmd">DeepSeek</span> <span class="comment">($0.001)</span><br>
       Tool result: Run tests → <span class="cmd">DeepSeek</span> <span class="comment">($0.001)</span><br>
-      "Debug this error" → <span class="purple">Claude</span> <span class="comment">($0.12)</span><br>
-      Tool result: Grep → <span class="cmd">DeepSeek</span> <span class="comment">($0.001)</span><br><br>
+      "Debug this error" → <span class="purple">Claude</span> <span class="comment">($0.12)</span><br><br>
       <span class="highlight">Session: $0.58 instead of $12.40</span>
     </div>
   </div>
@@ -511,20 +554,26 @@ a:hover { text-decoration: underline; }
 </div>
 </div>
 
-<!-- TWO MODES -->
+<!-- THREE MODES -->
 <div class="container">
 <div style="padding:40px 0;text-align:center">
-  <h2 style="font-size:28px;color:#fff;margin-bottom:24px">Two Ways to Run</h2>
-  <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;max-width:700px;margin:0 auto">
-    <div style="flex:1;min-width:280px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:left">
-      <h3 style="color:var(--green);margin-bottom:8px">Smart Routing <span style="font-size:12px;color:var(--dim)">(Default)</span></h3>
+  <h2 style="font-size:28px;color:#fff;margin-bottom:8px">Works With Any Agent, Three Ways</h2>
+  <p style="color:var(--dim);font-size:16px;margin-bottom:28px">Same proxy, same savings — choose the setup that fits your workflow.</p>
+  <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;max-width:900px;margin:0 auto">
+    <div style="flex:1;min-width:260px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:left">
+      <h3 style="color:var(--green);margin-bottom:8px">Claude Code <span style="font-size:12px;color:var(--dim)">(Default)</span></h3>
       <p style="color:var(--dim);font-size:14px;margin-bottom:12px">Routes between Claude + DeepSeek. Max savings (~90%). Needs a free DeepSeek API key.</p>
       <code style="font-family:var(--mono);color:var(--green);font-size:13px">aismush-start</code>
     </div>
-    <div style="flex:1;min-width:280px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:left">
+    <div style="flex:1;min-width:260px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:left">
       <h3 style="color:var(--purple);margin-bottom:8px">Direct Mode <span style="font-size:12px;color:var(--dim)">(Claude Only)</span></h3>
       <p style="color:var(--dim);font-size:14px;margin-bottom:12px">No DeepSeek needed. Still get compression, memory, agents, and tracking. Dashboard shows potential savings.</p>
       <code style="font-family:var(--mono);color:var(--purple);font-size:13px">aismush-start --direct</code>
+    </div>
+    <div style="flex:1;min-width:260px;background:var(--card);border:1px solid rgba(63,185,80,0.4);border-radius:12px;padding:24px;text-align:left">
+      <h3 style="color:var(--green);margin-bottom:8px">Goose <span style="font-size:12px;background:#0d2818;color:var(--green);padding:2px 6px;border-radius:4px;font-weight:700">NEW</span></h3>
+      <p style="color:var(--dim);font-size:14px;margin-bottom:12px">Start AISmush, then point Goose at the proxy. All routing, compression, and memory features apply automatically.</p>
+      <code style="font-family:var(--mono);color:var(--green);font-size:12px;line-height:1.8;display:block">aismush --daemon<br>ANTHROPIC_BASE_URL=http://localhost:1849 goose</code>
     </div>
   </div>
 </div>
@@ -554,16 +603,16 @@ a:hover { text-decoration: underline; }
   <h2>What's Coming Next</h2>
   <div class="roadmap">
     <div class="roadmap-item">
-      <h4>Local Models</h4>
-      <p>Route to Ollama/llama.cpp for zero-cost execution on your own hardware.</p>
-    </div>
-    <div class="roadmap-item">
-      <h4>Multi-Provider</h4>
-      <p>Add Gemini, GPT-4, Mistral as routing targets. Best model for each task.</p>
+      <h4>Full OpenAI Streaming</h4>
+      <p>Response-path SSE conversion for complete OpenAI mode compatibility with streaming agents.</p>
     </div>
     <div class="roadmap-item">
       <h4>Team Dashboard</h4>
-      <p>Shared savings dashboard for engineering teams. Track ROI across developers.</p>
+      <p>Shared savings dashboard for engineering teams. Track ROI and usage across all developers.</p>
+    </div>
+    <div class="roadmap-item">
+      <h4>More Agent Support</h4>
+      <p>First-class integrations for Aider, Continue.dev, Cursor, and other emerging AI coding agents.</p>
     </div>
   </div>
 </div>
@@ -575,7 +624,7 @@ a:hover { text-decoration: underline; }
     <a href="https://github.com/Skunk-Tech/aismush">GitHub</a> &middot;
     <a href="https://github.com/Skunk-Tech/aismush/releases">Releases</a> &middot;
     <a href="https://github.com/Skunk-Tech/aismush#readme">Documentation</a> &middot;
-    MIT Licensed &middot; 3,400+ lines of Rust
+    MIT Licensed &middot; 11,000+ lines of Rust
   </p>
   <p style="margin-top: 8px;">Created by <a href="https://github.com/Skunk-Tech">Garret Acott / Skunk Tech</a></p>
   <div class="sponsor">

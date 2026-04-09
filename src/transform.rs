@@ -394,6 +394,294 @@ impl OpenAIToAnthropicStream {
     pub fn output_tokens(&self) -> u64 { self.output_tokens }
 }
 
+// ── OpenAI → Anthropic request conversion (reverse of anthropic_to_openai) ──
+
+/// Convert an OpenAI /v1/chat/completions request body to Anthropic Messages API format.
+pub fn openai_to_anthropic(body: &Value) -> Value {
+    let mut system: Option<Value> = None;
+    let mut messages: Vec<Value> = Vec::new();
+
+    if let Some(msgs) = body.get("messages").and_then(|m| m.as_array()) {
+        // Accumulator for consecutive tool-role messages → grouped into one user message
+        let mut pending_tool_results: Vec<Value> = Vec::new();
+
+        for msg in msgs {
+            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+
+            match role {
+                "system" => {
+                    // OpenAI system message → Anthropic top-level system field
+                    let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                    system = Some(json!(text));
+                }
+                "tool" => {
+                    // OpenAI tool result → accumulate as Anthropic tool_result block
+                    let tool_call_id = msg.get("tool_call_id").and_then(|i| i.as_str()).unwrap_or("");
+                    let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                    pending_tool_results.push(json!({
+                        "type": "tool_result",
+                        "tool_use_id": tool_call_id,
+                        "content": content,
+                    }));
+                }
+                _ => {
+                    // Flush any pending tool results as a user message
+                    if !pending_tool_results.is_empty() {
+                        messages.push(json!({
+                            "role": "user",
+                            "content": pending_tool_results.drain(..).collect::<Vec<_>>(),
+                        }));
+                    }
+
+                    if role == "assistant" {
+                        let mut content_blocks: Vec<Value> = Vec::new();
+
+                        // Text content
+                        if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
+                            if !text.is_empty() {
+                                content_blocks.push(json!({"type": "text", "text": text}));
+                            }
+                        }
+
+                        // Tool calls → tool_use blocks
+                        if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
+                            for tc in tool_calls {
+                                let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                                if let Some(func) = tc.get("function") {
+                                    let name = func.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                    let args_str = func.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
+                                    let input: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+                                    content_blocks.push(json!({
+                                        "type": "tool_use",
+                                        "id": id,
+                                        "name": name,
+                                        "input": input,
+                                    }));
+                                }
+                            }
+                        }
+
+                        if content_blocks.is_empty() {
+                            content_blocks.push(json!({"type": "text", "text": ""}));
+                        }
+                        messages.push(json!({"role": "assistant", "content": content_blocks}));
+                    } else {
+                        // User message — convert string content to block array
+                        let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                        messages.push(json!({
+                            "role": "user",
+                            "content": [{"type": "text", "text": content}],
+                        }));
+                    }
+                }
+            }
+        }
+
+        // Flush remaining tool results
+        if !pending_tool_results.is_empty() {
+            messages.push(json!({
+                "role": "user",
+                "content": pending_tool_results,
+            }));
+        }
+    }
+
+    let mut result = json!({
+        "messages": messages,
+        "stream": true,
+    });
+
+    // Copy model
+    if let Some(model) = body.get("model").and_then(|m| m.as_str()) {
+        result["model"] = json!(model);
+    }
+
+    // Set system
+    if let Some(sys) = system {
+        result["system"] = sys;
+    }
+
+    // Copy max_tokens
+    if let Some(max) = body.get("max_tokens").and_then(|m| m.as_u64()) {
+        result["max_tokens"] = json!(max);
+    }
+
+    // Copy temperature
+    if let Some(temp) = body.get("temperature").and_then(|t| t.as_f64()) {
+        result["temperature"] = json!(temp);
+    }
+
+    // Convert OpenAI tools to Anthropic format
+    if let Some(tools) = body.get("tools").and_then(|t| t.as_array()) {
+        let anthropic_tools: Vec<Value> = tools.iter().filter_map(|tool| {
+            let func = tool.get("function")?;
+            Some(json!({
+                "name": func.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                "description": func.get("description").and_then(|d| d.as_str()).unwrap_or(""),
+                "input_schema": func.get("parameters").cloned().unwrap_or(json!({})),
+            }))
+        }).collect();
+        if !anthropic_tools.is_empty() {
+            result["tools"] = json!(anthropic_tools);
+        }
+    }
+
+    result
+}
+
+// ── Anthropic SSE → OpenAI SSE stream conversion ──
+
+/// State machine for converting Anthropic SSE stream to OpenAI SSE format.
+/// Used when the inbound client expects OpenAI format responses.
+pub struct AnthropicToOpenAIStream {
+    model: String,
+    response_id: String,
+    tool_call_index: i32,
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+impl AnthropicToOpenAIStream {
+    pub fn new(model: &str) -> Self {
+        Self {
+            model: model.to_string(),
+            response_id: format!("chatcmpl-{:016x}", rand_id()),
+            tool_call_index: -1,
+            input_tokens: 0,
+            output_tokens: 0,
+        }
+    }
+
+    /// Process a single Anthropic SSE event and return zero or more OpenAI SSE lines.
+    pub fn process_event(&mut self, event_type: &str, data: &str) -> Vec<String> {
+        let mut lines = Vec::new();
+
+        let Ok(parsed) = serde_json::from_str::<Value>(data) else {
+            return lines;
+        };
+
+        match event_type {
+            "message_start" => {
+                // Extract usage from message_start
+                if let Some(usage) = parsed.get("message").and_then(|m| m.get("usage")) {
+                    if let Some(it) = usage.get("input_tokens").and_then(|t| t.as_u64()) {
+                        self.input_tokens = it;
+                    }
+                }
+                // Emit first chunk with role
+                lines.push(self.openai_chunk(json!({
+                    "role": "assistant",
+                    "content": "",
+                }), Value::Null));
+            }
+            "content_block_start" => {
+                if let Some(cb) = parsed.get("content_block") {
+                    if cb.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                        self.tool_call_index += 1;
+                        let id = cb.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                        let name = cb.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        lines.push(self.openai_chunk(json!({
+                            "tool_calls": [{
+                                "index": self.tool_call_index,
+                                "id": id,
+                                "type": "function",
+                                "function": {"name": name, "arguments": ""},
+                            }]
+                        }), Value::Null));
+                    }
+                }
+            }
+            "content_block_delta" => {
+                if let Some(delta) = parsed.get("delta") {
+                    match delta.get("type").and_then(|t| t.as_str()) {
+                        Some("text_delta") => {
+                            let text = delta.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                            if !text.is_empty() {
+                                lines.push(self.openai_chunk(json!({"content": text}), Value::Null));
+                            }
+                        }
+                        Some("input_json_delta") => {
+                            let partial = delta.get("partial_json").and_then(|p| p.as_str()).unwrap_or("");
+                            if !partial.is_empty() && self.tool_call_index >= 0 {
+                                lines.push(self.openai_chunk(json!({
+                                    "tool_calls": [{
+                                        "index": self.tool_call_index,
+                                        "function": {"arguments": partial},
+                                    }]
+                                }), Value::Null));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "content_block_stop" => {
+                // No direct OpenAI equivalent needed
+            }
+            "message_delta" => {
+                if let Some(usage) = parsed.get("usage") {
+                    if let Some(ot) = usage.get("output_tokens").and_then(|t| t.as_u64()) {
+                        self.output_tokens = ot;
+                    }
+                }
+                let stop_reason = parsed.get("delta")
+                    .and_then(|d| d.get("stop_reason"))
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("stop");
+                let finish_reason = match stop_reason {
+                    "end_turn" => "stop",
+                    "tool_use" => "tool_calls",
+                    "max_tokens" => "length",
+                    other => other,
+                };
+                lines.push(self.openai_chunk_with_finish(finish_reason));
+            }
+            "message_stop" => {
+                lines.push("data: [DONE]\n\n".to_string());
+            }
+            _ => {}
+        }
+
+        lines
+    }
+
+    fn openai_chunk(&self, delta: Value, finish_reason: Value) -> String {
+        let chunk = json!({
+            "id": self.response_id,
+            "object": "chat.completion.chunk",
+            "model": self.model,
+            "choices": [{
+                "index": 0,
+                "delta": delta,
+                "finish_reason": finish_reason,
+            }]
+        });
+        format!("data: {}\n\n", chunk)
+    }
+
+    fn openai_chunk_with_finish(&self, reason: &str) -> String {
+        let chunk = json!({
+            "id": self.response_id,
+            "object": "chat.completion.chunk",
+            "model": self.model,
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": reason,
+            }],
+            "usage": {
+                "prompt_tokens": self.input_tokens,
+                "completion_tokens": self.output_tokens,
+                "total_tokens": self.input_tokens + self.output_tokens,
+            }
+        });
+        format!("data: {}\n\n", chunk)
+    }
+
+    pub fn input_tokens(&self) -> u64 { self.input_tokens }
+    pub fn output_tokens(&self) -> u64 { self.output_tokens }
+}
+
 fn sse_event(event_type: &str, data: &Value) -> String {
     format!("event: {}\ndata: {}\n\n", event_type, data)
 }
@@ -571,5 +859,210 @@ mod tests {
         let result = anthropic_to_openai(&body, "test-model");
         let messages = result["messages"].as_array().unwrap();
         assert_eq!(messages[0]["content"], "Part 1\n\nPart 2");
+    }
+
+    // ── OpenAI → Anthropic conversion tests ──
+
+    #[test]
+    fn test_openai_to_anthropic_simple() {
+        let body = json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello"},
+            ],
+            "max_tokens": 1024,
+        });
+
+        let result = openai_to_anthropic(&body);
+        assert_eq!(result["system"], "You are helpful.");
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"][0]["type"], "text");
+        assert_eq!(messages[0]["content"][0]["text"], "Hello");
+        assert_eq!(result["max_tokens"], 1024);
+    }
+
+    #[test]
+    fn test_openai_to_anthropic_tool_calls() {
+        let body = json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Read main.rs"},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{\"path\":\"/src/main.rs\"}"}
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "fn main() {}"},
+            ],
+        });
+
+        let result = openai_to_anthropic(&body);
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+
+        // Assistant has tool_use block
+        assert_eq!(messages[1]["role"], "assistant");
+        let content = messages[1]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_use");
+        assert_eq!(content[0]["name"], "read_file");
+        assert_eq!(content[0]["input"]["path"], "/src/main.rs");
+
+        // Tool result grouped into user message
+        assert_eq!(messages[2]["role"], "user");
+        let tool_results = messages[2]["content"].as_array().unwrap();
+        assert_eq!(tool_results[0]["type"], "tool_result");
+        assert_eq!(tool_results[0]["tool_use_id"], "call_1");
+        assert_eq!(tool_results[0]["content"], "fn main() {}");
+    }
+
+    #[test]
+    fn test_openai_to_anthropic_tools_definition() {
+        let body = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                }
+            }],
+        });
+
+        let result = openai_to_anthropic(&body);
+        let tools = result["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["name"], "get_weather");
+        assert_eq!(tools[0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn test_openai_to_anthropic_multiple_tool_results() {
+        let body = json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Read two files"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}},
+                    {"id": "c2", "type": "function", "function": {"name": "read", "arguments": "{}"}},
+                ]},
+                {"role": "tool", "tool_call_id": "c1", "content": "file1"},
+                {"role": "tool", "tool_call_id": "c2", "content": "file2"},
+            ],
+        });
+
+        let result = openai_to_anthropic(&body);
+        let messages = result["messages"].as_array().unwrap();
+        // Two consecutive tool messages → one user message with two tool_result blocks
+        let last = &messages[messages.len() - 1];
+        assert_eq!(last["role"], "user");
+        let results = last["content"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["tool_use_id"], "c1");
+        assert_eq!(results[1]["tool_use_id"], "c2");
+    }
+
+    // ── Anthropic → OpenAI SSE conversion tests ──
+
+    #[test]
+    fn test_anthropic_to_openai_stream_text() {
+        let mut stream = AnthropicToOpenAIStream::new("claude-sonnet");
+
+        let events = stream.process_event("message_start", &json!({
+            "type": "message_start",
+            "message": {"usage": {"input_tokens": 100}}
+        }).to_string());
+        assert!(events.iter().any(|e| e.contains("chat.completion.chunk")));
+        assert!(events.iter().any(|e| e.contains("\"role\":\"assistant\"")));
+
+        let events = stream.process_event("content_block_delta", &json!({
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": "Hello"}
+        }).to_string());
+        assert!(events.iter().any(|e| e.contains("\"content\":\"Hello\"")));
+
+        let events = stream.process_event("message_delta", &json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 5}
+        }).to_string());
+        assert!(events.iter().any(|e| e.contains("\"finish_reason\":\"stop\"")));
+
+        let events = stream.process_event("message_stop", &json!({"type": "message_stop"}).to_string());
+        assert!(events.iter().any(|e| e.contains("[DONE]")));
+    }
+
+    #[test]
+    fn test_anthropic_to_openai_stream_tool_use() {
+        let mut stream = AnthropicToOpenAIStream::new("claude-sonnet");
+
+        stream.process_event("message_start", &json!({
+            "type": "message_start",
+            "message": {"usage": {"input_tokens": 50}}
+        }).to_string());
+
+        let events = stream.process_event("content_block_start", &json!({
+            "type": "content_block_start",
+            "content_block": {"type": "tool_use", "id": "call_1", "name": "read_file", "input": {}}
+        }).to_string());
+        assert!(events.iter().any(|e| e.contains("tool_calls") && e.contains("read_file")));
+
+        let events = stream.process_event("content_block_delta", &json!({
+            "type": "content_block_delta",
+            "delta": {"type": "input_json_delta", "partial_json": "{\"path\":"}
+        }).to_string());
+        assert!(events.iter().any(|e| e.contains("arguments") && e.contains("{\\\"path\\\":")));
+
+        let events = stream.process_event("message_delta", &json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use"},
+            "usage": {"output_tokens": 20}
+        }).to_string());
+        assert!(events.iter().any(|e| e.contains("\"finish_reason\":\"tool_calls\"")));
+    }
+
+    // ── Round-trip test ──
+
+    #[test]
+    fn test_round_trip_anthropic_openai_anthropic() {
+        let original = json!({
+            "model": "claude-sonnet-4-20250514",
+            "system": "You are helpful.",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "Hello"}]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "I'll read that."},
+                    {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/main.rs"}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "fn main() {}"},
+                ]},
+            ],
+            "max_tokens": 4096,
+        });
+
+        // Anthropic → OpenAI
+        let openai = anthropic_to_openai(&original, "gpt-4");
+        // OpenAI → Anthropic
+        let back = openai_to_anthropic(&openai);
+
+        // Verify key structure preserved
+        assert_eq!(back["system"], "You are helpful.");
+        let msgs = back["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[1]["role"], "assistant");
+        assert_eq!(msgs[2]["role"], "user");
+
+        // Tool use preserved
+        let assistant_content = msgs[1]["content"].as_array().unwrap();
+        assert!(assistant_content.iter().any(|b| b["type"] == "tool_use" && b["name"] == "Read"));
+
+        // Tool result preserved
+        let tool_content = msgs[2]["content"].as_array().unwrap();
+        assert!(tool_content.iter().any(|b| b["type"] == "tool_result" && b["tool_use_id"] == "t1"));
     }
 }

@@ -216,6 +216,15 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         )?;
     }
 
+    if version < 6 {
+        info!("Running migration v6: client column on turns table");
+        conn.execute_batch(
+            "ALTER TABLE turns ADD COLUMN client TEXT DEFAULT 'claude-code';
+             INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '6');
+            "
+        )?;
+    }
+
     Ok(())
 }
 
@@ -299,6 +308,37 @@ pub async fn get_stats(db: &Db, from_ts: i64, to_ts: i64) -> serde_json::Value {
         ).unwrap_or(0.0);
         let potential_routing_savings = claude_tool_cost * 0.9;
 
+        // Per-provider breakdown
+        let mut providers = serde_json::Map::new();
+        if let Ok(mut stmt) = conn.prepare(&format!(
+            "SELECT provider, COUNT(*), COALESCE(SUM(actual_cost),0) FROM requests{} GROUP BY provider", w
+        )) {
+            let _ = stmt.query_map([], |row| {
+                let name: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                let cost: f64 = row.get(2)?;
+                Ok((name, count, cost))
+            }).ok().map(|rows| {
+                for row in rows.flatten() {
+                    providers.insert(row.0, serde_json::json!({"turns": row.1, "cost": (row.2 * 10000.0).round() / 10000.0}));
+                }
+            });
+        }
+
+        // Per-client breakdown (from turns table)
+        let mut clients = serde_json::Map::new();
+        if let Ok(mut stmt) = conn.prepare("SELECT COALESCE(client,'claude-code'), COUNT(*) FROM turns GROUP BY 1") {
+            let _ = stmt.query_map([], |row| {
+                let name: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((name, count))
+            }).ok().map(|rows| {
+                for row in rows.flatten() {
+                    clients.insert(row.0, serde_json::json!(row.1));
+                }
+            });
+        }
+
         serde_json::json!({
             "total_requests": total,
             "claude_turns": claude,
@@ -315,6 +355,8 @@ pub async fn get_stats(db: &Db, from_ts: i64, to_ts: i64) -> serde_json::Value {
             "compressed_original_bytes": comp_orig,
             "compressed_final_bytes": comp_final,
             "compression_savings_total": (comp_savings_total * 10000.0).round() / 10000.0,
+            "providers": providers,
+            "clients": clients,
         })
     }).await.unwrap_or(serde_json::json!({"error": "db query failed"}))
 }

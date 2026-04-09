@@ -21,6 +21,7 @@ pub struct TurnData {
     pub output_tokens: u64,
     pub latency_ms: u64,
     pub cost: f64,
+    pub client: String,
 }
 
 /// Extract the user's message from the request body.
@@ -87,35 +88,19 @@ pub fn extract_tool_calls(body: &Value) -> Vec<(String, String)> {
                 .to_string();
 
             let input = block.get("input");
-            let tool_input = match tool_name.as_str() {
-                "Read" | "read" => input
-                    .and_then(|i| i.get("file_path"))
-                    .and_then(|p| p.as_str())
-                    .unwrap_or("?")
-                    .to_string(),
-                "Edit" | "edit" | "Write" | "write" => input
-                    .and_then(|i| i.get("file_path"))
-                    .and_then(|p| p.as_str())
-                    .unwrap_or("?")
-                    .to_string(),
-                "Bash" | "bash" => {
-                    let cmd = input
-                        .and_then(|i| i.get("command"))
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("?");
+            let classifier = crate::tools::ToolClassifier::default();
+            let tool_input = match classifier.classify(&tool_name, input) {
+                crate::tools::ToolCategory::FileRead | crate::tools::ToolCategory::FileWrite => {
+                    input.and_then(|i| classifier.extract_file_path(i)).unwrap_or("?").to_string()
+                }
+                crate::tools::ToolCategory::Shell => {
+                    let cmd = input.and_then(|i| classifier.extract_command(i)).unwrap_or("?");
                     if cmd.len() > 80 { format!("{}...", &cmd[..80]) } else { cmd.to_string() }
                 }
-                "Grep" | "grep" => input
-                    .and_then(|i| i.get("pattern"))
-                    .and_then(|p| p.as_str())
-                    .unwrap_or("?")
-                    .to_string(),
-                "Glob" | "glob" => input
-                    .and_then(|i| i.get("pattern"))
-                    .and_then(|p| p.as_str())
-                    .unwrap_or("?")
-                    .to_string(),
-                _ => format!("{}", tool_name),
+                crate::tools::ToolCategory::Search => {
+                    input.and_then(|i| classifier.extract_pattern(i)).unwrap_or("?").to_string()
+                }
+                crate::tools::ToolCategory::Other(_) => tool_name.clone(),
             };
 
             tools.push((tool_name, tool_input));
@@ -173,6 +158,7 @@ pub async fn store_turn(
     let turn_provider = turn.provider.clone();
     let turn_model = turn.model.clone();
     let turn_reason = turn.route_reason.clone();
+    let turn_client = turn.client.clone();
     let tools = turn.tools.clone();
     let input_tokens = turn.input_tokens;
     let output_tokens = turn.output_tokens;
@@ -185,14 +171,14 @@ pub async fn store_turn(
         // Insert turn
         conn.execute(
             "INSERT INTO turns (conversation_id, turn_number, user_message, assistant_message,
-             provider, model, route_reason, input_tokens, output_tokens, latency_ms, cost, embedding)
+             provider, model, route_reason, input_tokens, output_tokens, latency_ms, cost, embedding, client)
              VALUES (?1, (SELECT COALESCE(MAX(turn_number),0)+1 FROM turns WHERE conversation_id=?1),
-             ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 conversation_id, turn_user, turn_asst,
                 turn_provider, turn_model, turn_reason,
                 input_tokens, output_tokens, latency, cost,
-                embedding_blob,
+                embedding_blob, turn_client,
             ],
         ).ok();
 

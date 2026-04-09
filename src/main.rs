@@ -1,4 +1,5 @@
 mod capture;
+mod client;
 mod cmd_compress;
 mod compress;
 mod config;
@@ -25,6 +26,7 @@ mod setup;
 mod state;
 mod summarize;
 mod tokens;
+mod tools;
 #[allow(dead_code)]
 mod transform;
 
@@ -388,7 +390,7 @@ async fn handle(
     req: Request<hyper::body::Incoming>,
     state: Arc<ProxyState>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
-    let path = req.uri().path_and_query().map(|pq| pq.as_str().to_string()).unwrap_or("/".into());
+    let mut path = req.uri().path_and_query().map(|pq| pq.as_str().to_string()).unwrap_or("/".into());
     let method = req.method().clone();
 
     // ── Static endpoints ────────────────────────────────────────────────
@@ -491,6 +493,24 @@ async fn handle(
     };
 
     let mut parsed: Option<serde_json::Value> = serde_json::from_slice(&body_bytes).ok();
+    let client_info = client::detect(&parts.headers, &parsed, &path);
+    debug!(client = %client_info.kind, format = ?client_info.inbound_format, "Client detected");
+
+    // ── Normalize inbound OpenAI format to Anthropic (our internal representation) ──
+    let mut body_modified_by_normalization = false;
+    if client_info.inbound_format == client::InboundFormat::OpenAI {
+        if let Some(ref body_val) = parsed {
+            let normalized = transform::openai_to_anthropic(body_val);
+            parsed = Some(normalized);
+            body_modified_by_normalization = true;
+            // Normalize path: OpenAI /v1/chat/completions → Anthropic /v1/messages
+            if path.contains("/chat/completions") {
+                path = "/v1/messages".to_string();
+            }
+            debug!("Normalized OpenAI request to Anthropic format");
+        }
+    }
+
     let model = parsed.as_ref()
         .and_then(|p| p["model"].as_str())
         .unwrap_or("claude")
@@ -569,8 +589,14 @@ async fn handle(
     }
 
     // ── Memory injection (ALL providers — budget-limited to ~300 tokens) ──
+    // Skip when under rate-limit pressure to reduce token overhead
     {
-        if let (Some(ref db), Some(ref mut body_val)) = (&state.db, &mut parsed) {
+        let last_429 = state.rate_limit_pressure.load(std::sync::atomic::Ordering::Relaxed);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let under_pressure = last_429 > 0 && now.saturating_sub(last_429) < 60;
+        if under_pressure {
+            debug!("Skipping memory injection (rate-limit pressure)");
+        } else if let (Some(ref db), Some(ref mut body_val)) = (&state.db, &mut parsed) {
             memory::inject_memories(db, body_val, &project_path).await;
         }
     }
@@ -579,7 +605,7 @@ async fn handle(
     // For non-Claude providers with smaller context windows.
     // Claude has 200K window and doesn't need trimming.
     // Trimming messages breaks tool_use/tool_result pairs → causes 400 errors on Claude.
-    let mut body_modified = comp_stats.original_bytes != comp_stats.compressed_bytes;
+    let mut body_modified = body_modified_by_normalization || comp_stats.original_bytes != comp_stats.compressed_bytes;
     if route.provider != "claude" {
         if let Some(ref mut body_val) = parsed {
             // All non-Claude providers use the conservative context limits (60K)
@@ -623,17 +649,20 @@ async fn handle(
     let comp_final = comp_stats.compressed_bytes as u64;
 
     if route.provider == "claude" {
-        forward::claude(&parts, &final_body, &path, &model, &route.reason, &project_path, comp_orig, comp_final, parsed.as_ref(), &state).await
+        let cn = client_info.kind.to_string();
+        forward::claude(&parts, &final_body, &path, &model, &route.reason, &project_path, comp_orig, comp_final, parsed.as_ref(), client_info.inbound_format, &cn, &state).await
     } else if route.provider == "deepseek" {
         // DeepSeek uses its Anthropic-compatible endpoint (no format conversion needed)
-        forward::deepseek(&final_body, &path, &parsed, "deepseek-chat", &route.reason, &project_path, comp_orig, comp_final, &state).await
+        let cn = client_info.kind.to_string();
+        forward::deepseek(&final_body, &path, &parsed, "deepseek-chat", &route.reason, &project_path, comp_orig, comp_final, client_info.inbound_format, &cn, &state).await
     } else {
         // All other providers use OpenAI-compatible format with conversion
         let provider_config = route.provider_config.as_ref();
         let base_url = provider_config.map(|p| p.base_url.as_str()).unwrap_or("http://localhost:11434");
         let api_key = provider_config.and_then(|p| p.api_key.as_deref());
         let target_model = provider_config.map(|p| p.default_model.as_str()).unwrap_or("default");
-        forward::openai_compat(&parsed, &route.provider, base_url, api_key, target_model, &route.reason, &project_path, comp_orig, comp_final, &state).await
+        let cn = client_info.kind.to_string();
+        forward::openai_compat(&parsed, &route.provider, base_url, api_key, target_model, &route.reason, &project_path, comp_orig, comp_final, client_info.inbound_format, &cn, &state).await
     }
 }
 

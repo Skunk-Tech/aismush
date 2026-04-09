@@ -1,16 +1,16 @@
 # AISmush
 
-**Make your Claude Code session limits last 10x longer.**
+**The intelligence layer for AI coding agents.**
 
-AISmush is a transparent proxy that dramatically reduces token consumption in Claude Code. File caching, command-aware compression, structural summarization, and structured memory eliminate token waste without changing how you work. Add smart routing to DeepSeek, OpenRouter, or local models for even bigger savings.
+AISmush is a transparent proxy that works with Claude Code, Goose, and any agent that speaks the Anthropic or OpenAI API format. File caching, command-aware compression, structural summarization, and structured memory eliminate token waste without changing how you work. Add smart routing to DeepSeek, OpenRouter, or local models for even bigger savings.
 
-One binary. One setup command. Claude Code doesn't even know it's there.
+One binary. One setup command. Your agent doesn't even know it's there.
 
 ## The Problem
 
-Anthropic is tightening Claude Code limits. Peak-hour session limits have been reduced. Users on $200/month Max plans report 5-hour limits burning out in under 90 minutes. Third-party tool access has been cut off entirely. The token economy is getting harder, not easier.
+Every AI coding agent — Claude Code, Goose, or any other — burns through tokens on mechanical waste. Anthropic is tightening Claude Code limits. Peak-hour session limits have been reduced. Users on $200/month Max plans report 5-hour limits burning out in under 90 minutes. Goose and other agents face identical pressure: context windows fill fast, costs compound quickly, and token budgets run out.
 
-Most of those tokens are wasted on mechanical tasks — re-reading files Claude already saw, processing 50-line test outputs when 2 lines would do, carrying dead context from 20 turns ago. AISmush eliminates that waste.
+Most of those tokens are wasted on mechanical tasks — re-reading files the agent already saw, processing 50-line test outputs when 2 lines would do, carrying dead context from 20 turns ago. Every agent suffers this. AISmush fixes it for all of them: compression, caching, memory, and smart routing are protocol-level features that benefit any client speaking the Anthropic Messages API or OpenAI Chat Completions API.
 
 ## The Solution
 
@@ -165,6 +165,35 @@ aismush-start --direct
 
 All modes give you AI-generated project agents, persistent memory, context compression, and the full dashboard.
 
+## Supported Clients
+
+AISmush works with any tool that speaks the Anthropic Messages API or OpenAI Chat Completions API.
+
+### Claude Code
+```bash
+aismush-start   # automatically sets ANTHROPIC_BASE_URL and launches Claude Code
+```
+
+### Goose (Anthropic mode)
+```bash
+ANTHROPIC_HOST=http://localhost:1849 goose
+```
+
+### Goose (OpenAI mode)
+```bash
+OPENAI_HOST=http://localhost:1849 goose
+```
+
+### Any Anthropic API client
+```bash
+ANTHROPIC_BASE_URL=http://localhost:1849 your-tool
+```
+
+### Any OpenAI API client
+Point your client at `http://localhost:1849/v1/chat/completions`. The proxy accepts standard OpenAI Chat Completions format and routes it through the same compression, memory, and routing pipeline.
+
+Goose gets the same benefits as Claude Code: structural summarization, file caching, memory injection, smart routing to cheaper models, cost tracking, and the live dashboard — all without any changes to Goose itself.
+
 ## Quick Start
 
 ### One-Line Install (Linux / macOS)
@@ -231,33 +260,37 @@ cp target/release/aismush ~/.local/bin/
 ## How It Works
 
 ```
-You type in Claude Code
-    |
-    v
-Claude Code sends request to AISmush (localhost:1849)
-    |
-    v
-AISmush analyzes the turn:
-    |-- Classify task type (planning, debugging, tool result, etc.)
-    |-- Check blast-radius of files being edited
-    |-- Compress tool_result content (strip comments, dedup, truncate)
-    |-- Estimate token count
-    |-- Inject memories from previous sessions
-    |-- Pick cheapest healthy provider at the required tier
-    |
-    +---> Claude API (planning, debugging, high blast-radius, large context)
-    +---> DeepSeek API (code generation, moderate complexity)
-    +---> OpenRouter (290+ models, fallback option)
-    +---> Local model (Ollama etc. — tool results, file reads — FREE)
-              |
-              +---> Response streams back to Claude Code
-    |
-    v
-AISmush logs: provider, tokens, cost, latency → SQLite
-Extracts memorable facts from response → SQLite
+You work in Claude Code  ──or──  You work in Goose  ──or──  Any Anthropic/OpenAI client
+         |                              |                              |
+         v                             v                              v
+  (ANTHROPIC_BASE_URL           (ANTHROPIC_HOST or           (ANTHROPIC_BASE_URL or
+   auto-set by                   OPENAI_HOST set to           send to localhost:1849
+   aismush-start)                localhost:1849)              /v1/chat/completions)
+         |                             |                              |
+         +-----------------------------+------------------------------+
+                                       |
+                                       v
+                        AISmush (localhost:1849) analyzes the turn:
+                            |-- Classify task type (planning, debugging, tool result, etc.)
+                            |-- Check blast-radius of files being edited
+                            |-- Compress tool_result content (strip comments, dedup, truncate)
+                            |-- Estimate token count
+                            |-- Inject memories from previous sessions
+                            |-- Pick cheapest healthy provider at the required tier
+                            |
+                            +---> Claude API (planning, debugging, high blast-radius, large context)
+                            +---> DeepSeek API (code generation, moderate complexity)
+                            +---> OpenRouter (290+ models, fallback option)
+                            +---> Local model (Ollama etc. — tool results, file reads — FREE)
+                                       |
+                                       +---> Response streams back to your agent
+                            |
+                            v
+                    AISmush logs: provider, tokens, cost, latency → SQLite
+                    Extracts memorable facts from response → SQLite
 ```
 
-**Claude Code doesn't know the difference.** It sends requests to `localhost:1849` instead of `api.anthropic.com`, and everything else works identically.
+**Your agent doesn't know the difference.** Requests go to `localhost:1849` instead of the upstream API, and everything else works identically.
 
 ## Configuration
 
@@ -279,6 +312,9 @@ AISmush reads config from (in priority order):
 | `FORCE_PROVIDER` | (none) | Force all requests to a specific provider |
 | `AISMUSH_AUTO_DISCOVER` | `true` | Auto-discover local model servers |
 | `AISMUSH_BLAST_THRESHOLD` | `0.5` | Blast-radius score threshold for tier escalation |
+| `ANTHROPIC_BASE_URL` | (none) | Set to `http://localhost:1849` to route any Anthropic client through AISmush |
+| `ANTHROPIC_HOST` | (none) | Goose-specific equivalent of `ANTHROPIC_BASE_URL` — set to `http://localhost:1849` |
+| `OPENAI_HOST` | (none) | Goose-specific variable for OpenAI-compat mode — set to `http://localhost:1849` |
 
 ### Config File
 
@@ -295,11 +331,18 @@ AISmush reads config from (in priority order):
     "minTierForPlanning": "premium",
     "minTierForDebugging": "mid"
   },
+  "toolMappings": {
+    "str_replace_editor": "text_editor",
+    "create_file": "text_editor",
+    "bash": "bash"
+  },
   "port": 1849,
   "verbose": false,
   "forceProvider": null
 }
 ```
+
+`toolMappings` translates tool names between agent dialects. For example, Goose uses `str_replace_editor` while the Anthropic API expects `text_editor`. Add entries here whenever a new agent uses different tool names than the upstream API expects.
 
 ### Claude Authentication
 
@@ -341,7 +384,7 @@ Based on real usage with a large Rust/React/Node.js codebase:
 ## Architecture
 
 ```
-19 Rust modules:
+21 Rust modules:
 
 main.rs        — HTTP server + request pipeline
 config.rs      — JSON + env config loading
@@ -349,6 +392,8 @@ provider.rs    — Provider abstraction (tiers, health, registry)
 router.rs      — Multi-factor tier-based routing engine
 forward.rs     — Claude/DeepSeek/OpenAI-compat forwarding + streaming
 transform.rs   — Anthropic ↔ OpenAI format conversion
+client.rs      — Unified client abstraction for Claude Code, Goose, and generic agents
+tools.rs       — Tool name mapping and normalization across agent dialects
 discovery.rs   — Auto-discovery of local model servers
 setup.rs       — Interactive provider setup with connection testing
 compress.rs    — Context compression engine
@@ -386,11 +431,17 @@ A: The proxy automatically falls back to DeepSeek — it trims context to fit De
 **Q: Is my data sent anywhere?**
 A: Your requests go to the same APIs you'd normally use (Anthropic + DeepSeek). The proxy runs locally — no third-party servers, no telemetry, no data collection.
 
+**Q: Does it work with Goose?**
+A: Yes. Set `ANTHROPIC_HOST=http://localhost:1849` (Anthropic mode) or `OPENAI_HOST=http://localhost:1849` (OpenAI mode) before launching Goose. Goose gets the full AISmush treatment: compression, file caching, memory injection, smart routing, cost tracking, and the live dashboard — without any changes to Goose itself.
+
+**Q: Does it work with other AI agents?**
+A: Yes. Any tool that speaks the Anthropic Messages API or OpenAI Chat Completions API can connect. For Anthropic-compatible clients set `ANTHROPIC_BASE_URL=http://localhost:1849`. For OpenAI-compatible clients point at `http://localhost:1849/v1/chat/completions`. If the agent uses different tool names, add entries to `toolMappings` in your config.
+
 **Q: Does it work with Claude Code in VS Code?**
 A: Yes. Set `ANTHROPIC_BASE_URL=http://localhost:1849` in your VS Code settings, or use `start.sh` / `aismush-start` which handles this automatically.
 
 **Q: Does it work with the Anthropic API / SDK directly?**
-A: Yes. Any application that uses the Anthropic Messages API works — just set `ANTHROPIC_BASE_URL=http://localhost:1849`. This includes the Anthropic Python/TypeScript SDKs, Claude Code CLI, Claude Code VS Code extension, and any custom integration.
+A: Yes. Any application that uses the Anthropic Messages API works — just set `ANTHROPIC_BASE_URL=http://localhost:1849`. This includes the Anthropic Python/TypeScript SDKs, Claude Code CLI, Claude Code VS Code extension, Goose, and any custom integration.
 
 **Q: How do I check if the proxy is running?**
 A: Run `aismush --status` from any terminal, or visit `http://localhost:1849/dashboard`.
@@ -421,7 +472,7 @@ aismush-start        # Start proxy + launch Claude Code (recommended)
 
 ## Requirements
 
-- [Claude Code](https://claude.ai/code) CLI installed (or any Anthropic API client)
+- An AI coding agent: [Claude Code](https://claude.ai/code), [Goose](https://github.com/block/goose), or any client speaking the Anthropic or OpenAI API format
 - At least one of: [DeepSeek API key](https://platform.deepseek.com/api_keys) (free tier), [OpenRouter API key](https://openrouter.ai/keys), or a local model server (Ollama, LM Studio, etc.)
 - Or just use `--direct` mode with Claude only (compression + memory still work)
 - Linux x86_64, macOS (Intel or Apple Silicon), or Windows x86_64

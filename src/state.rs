@@ -11,6 +11,7 @@ use crate::db::Db;
 use crate::embeddings::EmbeddingEngine;
 use crate::file_cache::FileCache;
 use crate::provider::ProviderRegistry;
+use crate::tools::ToolClassifier;
 
 pub type HttpClient = Client<
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
@@ -28,6 +29,12 @@ pub struct ProxyState {
     pub instance_id: String,
     pub registry: RwLock<ProviderRegistry>,
     pub file_cache: Mutex<FileCache>,
+    /// Timestamp (epoch secs) when last 429 was received. If within 60s, memory injection is skipped.
+    pub rate_limit_pressure: std::sync::atomic::AtomicU64,
+    /// Tool classifier for client-agnostic tool name detection.
+    /// Used by intelligence pipeline; will be passed to file_cache/memory/capture when refactored.
+    #[allow(dead_code)]
+    pub tool_classifier: ToolClassifier,
 }
 
 #[derive(Default, Debug, serde::Serialize)]
@@ -63,6 +70,7 @@ pub struct ReportedStats {
 impl ProxyState {
     pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>, embedder: Option<EmbeddingEngine>, dashboard_html: String, registry: ProviderRegistry) -> Arc<Self> {
         let instance_id = load_or_create_instance_id(&config.data_dir);
+        let tool_classifier = ToolClassifier::new(config.tool_mappings.as_ref());
         Arc::new(Self {
             config,
             client,
@@ -74,6 +82,8 @@ impl ProxyState {
             instance_id,
             registry: RwLock::new(registry),
             file_cache: Mutex::new(FileCache::new(500)),
+            rate_limit_pressure: std::sync::atomic::AtomicU64::new(0),
+            tool_classifier,
         })
     }
 }

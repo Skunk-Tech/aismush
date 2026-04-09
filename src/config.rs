@@ -19,6 +19,8 @@ pub struct ProxyConfig {
     pub auto_discover_local: bool,
     /// Routing configuration
     pub routing: RoutingConfig,
+    /// Custom tool name → category mappings for multi-client support
+    pub tool_mappings: Option<crate::tools::ToolMappings>,
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +57,7 @@ struct FileConfig {
     local: Option<Vec<LocalServerFileConfig>>,
     auto_discover_local: Option<bool>,
     routing: Option<RoutingFileConfig>,
+    tool_mappings: Option<crate::tools::ToolMappings>,
 }
 
 #[derive(Deserialize, Default)]
@@ -148,7 +151,9 @@ impl ProxyConfig {
 
         let db_path = data_dir.join("proxy.db");
 
-        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, local_servers, auto_discover_local, routing }
+        let tool_mappings = file_cfg.tool_mappings;
+
+        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, local_servers, auto_discover_local, routing, tool_mappings }
     }
 
     fn load_file() -> FileConfig {

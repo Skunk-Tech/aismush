@@ -29,41 +29,31 @@ pub fn extract_observations(body: &Value) -> Vec<(String, String)> {
                 let tool_name = block.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
                 let input = block.get("input");
 
-                let observation = match tool_name {
-                    "Read" | "read" => {
-                        let path = input.and_then(|i| i.get("file_path")).and_then(|p| p.as_str()).unwrap_or("?");
+                let classifier = crate::tools::ToolClassifier::default();
+                let category_enum = classifier.classify(tool_name, input);
+
+                let observation = match &category_enum {
+                    crate::tools::ToolCategory::FileRead => {
+                        let path = input.and_then(|i| classifier.extract_file_path(i)).unwrap_or("?");
                         format!("Read file: {}", path)
                     }
-                    "Edit" | "edit" => {
-                        let path = input.and_then(|i| i.get("file_path")).and_then(|p| p.as_str()).unwrap_or("?");
+                    crate::tools::ToolCategory::FileWrite => {
+                        let path = input.and_then(|i| classifier.extract_file_path(i)).unwrap_or("?");
                         format!("Edited file: {}", path)
                     }
-                    "Write" | "write" => {
-                        let path = input.and_then(|i| i.get("file_path")).and_then(|p| p.as_str()).unwrap_or("?");
-                        format!("Created file: {}", path)
-                    }
-                    "Bash" | "bash" => {
-                        let cmd = input.and_then(|i| i.get("command")).and_then(|c| c.as_str()).unwrap_or("?");
+                    crate::tools::ToolCategory::Shell => {
+                        let cmd = input.and_then(|i| classifier.extract_command(i)).unwrap_or("?");
                         let short = if cmd.len() > 100 { &cmd[..100] } else { cmd };
                         format!("Ran: {}", short)
                     }
-                    "Grep" | "grep" => {
-                        let pattern = input.and_then(|i| i.get("pattern")).and_then(|p| p.as_str()).unwrap_or("?");
+                    crate::tools::ToolCategory::Search => {
+                        let pattern = input.and_then(|i| classifier.extract_pattern(i)).unwrap_or("?");
                         format!("Searched for: {}", pattern)
                     }
-                    "Glob" | "glob" => {
-                        let pattern = input.and_then(|i| i.get("pattern")).and_then(|p| p.as_str()).unwrap_or("?");
-                        format!("Found files: {}", pattern)
-                    }
-                    _ => format!("Used tool: {}", tool_name),
+                    crate::tools::ToolCategory::Other(_) => format!("Used tool: {}", tool_name),
                 };
 
-                let category = match tool_name {
-                    "Read" | "read" | "Grep" | "grep" | "Glob" | "glob" => "exploration",
-                    "Edit" | "edit" | "Write" | "write" => "modification",
-                    "Bash" | "bash" => "command",
-                    _ => "tool",
-                };
+                let category = category_enum.observation_category();
 
                 observations.push((observation, category.to_string()));
             }

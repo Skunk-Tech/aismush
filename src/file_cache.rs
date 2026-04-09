@@ -132,15 +132,16 @@ pub fn apply_file_cache(body: &mut Option<Value>, cache: &mut FileCache) -> File
                 if block.get("type").and_then(|t| t.as_str()) != Some("tool_use") { continue; }
 
                 let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                // Match Read tool, read_file, cat — Claude Code's file reading tools
-                if name != "Read" && name != "read_file" && name != "cat" && name != "read" {
+                let input = block.get("input");
+                let classifier = crate::tools::ToolClassifier::default();
+
+                if classifier.classify(name, input) != crate::tools::ToolCategory::FileRead {
                     continue;
                 }
 
                 let id = block.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                let file_path = block.get("input")
-                    .and_then(|i| i.get("file_path").or_else(|| i.get("path")))
-                    .and_then(|p| p.as_str())
+                let file_path = input
+                    .and_then(|i| classifier.extract_file_path(i))
                     .unwrap_or("")
                     .to_string();
 
