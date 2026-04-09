@@ -129,14 +129,21 @@ for cfg in "$PWD/config.json" "$PWD/.deepseek-proxy.json" "$CONFIG"; do
     fi
 done
 
-# Parse --direct flag FIRST (before provider check)
+# Parse flags
 AISMUSH_FLAGS=""
-CLAUDE_ARGS=()
+AGENT_ARGS=()
+FORCE_AGENT=""
 for arg in "$@"; do
     if [ "$arg" = "--direct" ]; then
         AISMUSH_FLAGS="--direct"
+    elif [ "$arg" = "--goose" ]; then
+        FORCE_AGENT="goose"
+    elif [ "$arg" = "--claude" ]; then
+        FORCE_AGENT="claude"
+    elif [ "$arg" = "--proxy-only" ]; then
+        FORCE_AGENT="proxy-only"
     else
-        CLAUDE_ARGS+=("$arg")
+        AGENT_ARGS+=("$arg")
     fi
 done
 
@@ -227,7 +234,83 @@ except: pass
 }
 trap cleanup EXIT INT TERM
 
-ANTHROPIC_BASE_URL="http://localhost:$PORT" claude "${CLAUDE_ARGS[@]}" || true
+# ── Detect and launch agent ─────────────────────────────────────────
+HAS_CLAUDE=$(command -v claude >/dev/null 2>&1 && echo "yes" || echo "")
+HAS_GOOSE=$(command -v goose >/dev/null 2>&1 && echo "yes" || echo "")
+
+AGENT="$FORCE_AGENT"
+
+if [ -z "$AGENT" ]; then
+    if [ -n "$HAS_CLAUDE" ] && [ -n "$HAS_GOOSE" ]; then
+        echo ""
+        echo "  Found both Claude Code and Goose."
+        echo ""
+        echo "    1) Claude Code"
+        echo "    2) Goose"
+        echo ""
+        read -p "  Launch which? [1/2]: " CHOICE
+        case "$CHOICE" in
+            2|goose|g) AGENT="goose" ;;
+            *) AGENT="claude" ;;
+        esac
+    elif [ -n "$HAS_GOOSE" ]; then
+        AGENT="goose"
+    elif [ -n "$HAS_CLAUDE" ]; then
+        AGENT="claude"
+    else
+        echo ""
+        echo "  No AI agent found. Install Claude Code or Goose, then re-run."
+        echo "  Or use: aismush-start --proxy-only"
+        echo ""
+        kill $PROXY_PID 2>/dev/null
+        exit 1
+    fi
+fi
+
+case "$AGENT" in
+    claude)
+        echo "  Launching Claude Code..."
+        echo ""
+        ANTHROPIC_BASE_URL="http://localhost:$PORT" claude "${AGENT_ARGS[@]}" || true
+        ;;
+    goose)
+        # Auto-configure Goose on first use (non-destructive)
+        GOOSE_CFG="$HOME/.config/goose/config.yaml"
+        if [ -f "$GOOSE_CFG" ]; then
+            if ! grep -q "ANTHROPIC_HOST.*localhost.*$PORT" "$GOOSE_CFG" 2>/dev/null; then
+                echo "  Configuring Goose to use AISmush..."
+                # Back up existing config
+                cp "$GOOSE_CFG" "$GOOSE_CFG.pre-aismush"
+                # Set AISmush as the proxy — Goose reads ANTHROPIC_HOST from config
+                if grep -q "^ANTHROPIC_HOST:" "$GOOSE_CFG" 2>/dev/null; then
+                    sed -i "s|^ANTHROPIC_HOST:.*|ANTHROPIC_HOST: http://localhost:$PORT|" "$GOOSE_CFG"
+                else
+                    echo "ANTHROPIC_HOST: http://localhost:$PORT" >> "$GOOSE_CFG"
+                fi
+                echo "  Done. (backup: $GOOSE_CFG.pre-aismush)"
+            fi
+        else
+            mkdir -p "$(dirname "$GOOSE_CFG")"
+            echo "ANTHROPIC_HOST: http://localhost:$PORT" > "$GOOSE_CFG"
+        fi
+        echo "  Launching Goose..."
+        echo ""
+        ANTHROPIC_HOST="http://localhost:$PORT" goose "${AGENT_ARGS[@]}" || true
+        ;;
+    proxy-only)
+        echo ""
+        echo "  Proxy running on http://localhost:$PORT"
+        echo "  Dashboard: http://localhost:$PORT/dashboard"
+        echo ""
+        echo "  Connect any agent:"
+        echo "    Claude Code:  ANTHROPIC_BASE_URL=http://localhost:$PORT claude"
+        echo "    Goose:        ANTHROPIC_HOST=http://localhost:$PORT goose"
+        echo "    Any client:   Point API base URL to http://localhost:$PORT"
+        echo ""
+        echo "  Press Ctrl+C to stop."
+        wait $PROXY_PID
+        ;;
+esac
 WRAPPER
 
 chmod +x "$INSTALL_DIR/aismush-start"
@@ -235,10 +318,9 @@ chmod +x "$INSTALL_DIR/aismush-start"
 echo ""
 echo "  Done! Run from any directory:"
 echo ""
-echo "    aismush-start"
-echo "      Sets up DeepSeek routing (saves ~90% on API costs)"
-echo "      First run will ask for your DeepSeek API key (one time only)"
-echo ""
-echo "    aismush-start --direct"
-echo "      Uses Claude directly (no DeepSeek key needed)"
+echo "    aismush-start              Auto-detects Claude Code or Goose and launches it"
+echo "    aismush-start --claude     Launch with Claude Code"
+echo "    aismush-start --goose      Launch with Goose"
+echo "    aismush-start --direct     Claude only (no routing, still compresses + tracks)"
+echo "    aismush-start --proxy-only Just the proxy (connect any agent yourself)"
 echo ""

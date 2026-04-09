@@ -25,13 +25,28 @@ fi
 PORT="${PROXY_PORT:-1849}"
 lsof -ti:$PORT 2>/dev/null | xargs kill -9 2>/dev/null || true
 
-DIRECT_FLAG=""
-if [ "$1" = "--direct" ]; then
-    DIRECT_FLAG="--direct"
+# Parse flags
+AISMUSH_FLAGS=""
+AGENT_ARGS=()
+FORCE_AGENT=""
+for arg in "$@"; do
+    if [ "$arg" = "--direct" ]; then
+        AISMUSH_FLAGS="--direct"
+    elif [ "$arg" = "--goose" ]; then
+        FORCE_AGENT="goose"
+    elif [ "$arg" = "--claude" ]; then
+        FORCE_AGENT="claude"
+    elif [ "$arg" = "--proxy-only" ]; then
+        FORCE_AGENT="proxy-only"
+    else
+        AGENT_ARGS+=("$arg")
+    fi
+done
+
+if [ -n "$AISMUSH_FLAGS" ]; then
     echo ""
     echo "  AISmush - Direct Mode (Claude only)"
     echo "  Compression, memory, agents, and tracking still active"
-    shift
 else
     echo ""
     echo "  AISmush - Smart Routing Mode"
@@ -40,11 +55,6 @@ echo "  Port:      $PORT"
 echo "  Dashboard: http://localhost:$PORT/dashboard"
 echo "  Log:       $LOGFILE"
 echo ""
-
-if [ "$1" = "--proxy-only" ]; then
-    echo "  ANTHROPIC_BASE_URL=http://localhost:$PORT claude"
-    exec "$BINARY" $DIRECT_FLAG
-fi
 
 # Check for update notification from previous run
 UPDATE_FILE="$LOGDIR/update-available"
@@ -58,7 +68,7 @@ if [ -f "$UPDATE_FILE" ]; then
 fi
 
 # stdout → log, stderr passes through to terminal (for update notifications)
-"$BINARY" $DIRECT_FLAG > "$LOGFILE" &
+"$BINARY" $AISMUSH_FLAGS > "$LOGFILE" &
 PROXY_PID=$!
 sleep 0.5
 
@@ -85,4 +95,73 @@ except: pass
 }
 trap cleanup EXIT INT TERM
 
-ANTHROPIC_BASE_URL="http://localhost:$PORT" claude "$@" || true
+# ── Detect and launch agent ─────────────────────────────────────────
+HAS_CLAUDE=$(command -v claude >/dev/null 2>&1 && echo "yes" || echo "")
+HAS_GOOSE=$(command -v goose >/dev/null 2>&1 && echo "yes" || echo "")
+
+AGENT="$FORCE_AGENT"
+
+if [ -z "$AGENT" ]; then
+    if [ -n "$HAS_CLAUDE" ] && [ -n "$HAS_GOOSE" ]; then
+        echo "  Found both Claude Code and Goose."
+        echo ""
+        echo "    1) Claude Code"
+        echo "    2) Goose"
+        echo ""
+        read -p "  Launch which? [1/2]: " CHOICE
+        case "$CHOICE" in
+            2|goose|g) AGENT="goose" ;;
+            *) AGENT="claude" ;;
+        esac
+    elif [ -n "$HAS_GOOSE" ]; then
+        AGENT="goose"
+    elif [ -n "$HAS_CLAUDE" ]; then
+        AGENT="claude"
+    else
+        echo "  No AI agent found. Install Claude Code or Goose, then re-run."
+        echo "  Or use: ./start.sh --proxy-only"
+        kill $PROXY_PID 2>/dev/null
+        exit 1
+    fi
+fi
+
+case "$AGENT" in
+    claude)
+        echo "  Launching Claude Code..."
+        echo ""
+        ANTHROPIC_BASE_URL="http://localhost:$PORT" claude "${AGENT_ARGS[@]}" || true
+        ;;
+    goose)
+        # Auto-configure Goose on first use (non-destructive)
+        GOOSE_CFG="$HOME/.config/goose/config.yaml"
+        if [ -f "$GOOSE_CFG" ]; then
+            if ! grep -q "ANTHROPIC_HOST.*localhost.*$PORT" "$GOOSE_CFG" 2>/dev/null; then
+                echo "  Configuring Goose to use AISmush..."
+                cp "$GOOSE_CFG" "$GOOSE_CFG.pre-aismush"
+                if grep -q "^ANTHROPIC_HOST:" "$GOOSE_CFG" 2>/dev/null; then
+                    sed -i "s|^ANTHROPIC_HOST:.*|ANTHROPIC_HOST: http://localhost:$PORT|" "$GOOSE_CFG"
+                else
+                    echo "ANTHROPIC_HOST: http://localhost:$PORT" >> "$GOOSE_CFG"
+                fi
+                echo "  Done. (backup: $GOOSE_CFG.pre-aismush)"
+            fi
+        else
+            mkdir -p "$(dirname "$GOOSE_CFG")"
+            echo "ANTHROPIC_HOST: http://localhost:$PORT" > "$GOOSE_CFG"
+        fi
+        echo "  Launching Goose..."
+        echo ""
+        ANTHROPIC_HOST="http://localhost:$PORT" goose "${AGENT_ARGS[@]}" || true
+        ;;
+    proxy-only)
+        echo "  Proxy running on http://localhost:$PORT"
+        echo "  Dashboard: http://localhost:$PORT/dashboard"
+        echo ""
+        echo "  Connect any agent:"
+        echo "    Claude Code:  aismush-start --claude"
+        echo "    Goose:        aismush-start --goose"
+        echo ""
+        echo "  Press Ctrl+C to stop."
+        wait $PROXY_PID
+        ;;
+esac
