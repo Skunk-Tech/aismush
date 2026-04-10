@@ -31,6 +31,8 @@ pub struct ProxyState {
     pub file_cache: Mutex<FileCache>,
     /// Timestamp (epoch secs) when last 429 was received. If within 60s, memory injection is skipped.
     pub rate_limit_pressure: std::sync::atomic::AtomicU64,
+    /// Limits concurrent in-flight requests to Claude to avoid 429s.
+    pub claude_semaphore: Arc<tokio::sync::Semaphore>,
     /// Tool classifier for client-agnostic tool name detection.
     /// Used by intelligence pipeline; will be passed to file_cache/memory/capture when refactored.
     #[allow(dead_code)]
@@ -71,6 +73,7 @@ impl ProxyState {
     pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>, embedder: Option<EmbeddingEngine>, dashboard_html: String, registry: ProviderRegistry) -> Arc<Self> {
         let instance_id = load_or_create_instance_id(&config.data_dir);
         let tool_classifier = ToolClassifier::new(config.tool_mappings.as_ref());
+        let max_concurrent = config.max_concurrent_claude;
         Arc::new(Self {
             config,
             client,
@@ -83,6 +86,7 @@ impl ProxyState {
             registry: RwLock::new(registry),
             file_cache: Mutex::new(FileCache::new(500)),
             rate_limit_pressure: std::sync::atomic::AtomicU64::new(0),
+            claude_semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
             tool_classifier,
         })
     }

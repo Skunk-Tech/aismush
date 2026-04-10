@@ -118,6 +118,7 @@ async fn main() {
         println!("Auto-discover:   {}", cfg.auto_discover_local);
         println!("Local servers:   {}", if cfg.local_servers.is_empty() { "(none)".into() } else { cfg.local_servers.iter().map(|(n,_,_)| n.as_str()).collect::<Vec<_>>().join(", ") });
         println!("Blast threshold: {}", cfg.routing.blast_radius_threshold);
+        println!("Max concurrent:  {}", cfg.max_concurrent_claude);
         println!("Verbose:         {}", cfg.verbose);
         println!("Data Dir:        {}", cfg.data_dir.display());
         println!("Database:        {}", cfg.db_path.display());

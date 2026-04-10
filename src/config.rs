@@ -21,6 +21,8 @@ pub struct ProxyConfig {
     pub routing: RoutingConfig,
     /// Custom tool name → category mappings for multi-client support
     pub tool_mappings: Option<crate::tools::ToolMappings>,
+    /// Max concurrent in-flight requests to Claude (default 5)
+    pub max_concurrent_claude: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -58,6 +60,7 @@ struct FileConfig {
     auto_discover_local: Option<bool>,
     routing: Option<RoutingFileConfig>,
     tool_mappings: Option<crate::tools::ToolMappings>,
+    max_concurrent_claude: Option<usize>,
 }
 
 #[derive(Deserialize, Default)]
@@ -153,7 +156,13 @@ impl ProxyConfig {
 
         let tool_mappings = file_cfg.tool_mappings;
 
-        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, local_servers, auto_discover_local, routing, tool_mappings }
+        let max_concurrent_claude = env::var("AISMUSH_MAX_CONCURRENT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .or(file_cfg.max_concurrent_claude)
+            .unwrap_or(5);
+
+        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, local_servers, auto_discover_local, routing, tool_mappings, max_concurrent_claude }
     }
 
     fn load_file() -> FileConfig {

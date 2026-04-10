@@ -128,6 +128,15 @@ pub async fn claude(
         }
     };
 
+    // Limit concurrent in-flight requests to Claude to avoid 429s
+    let permit = match state.claude_semaphore.clone().acquire_owned().await {
+        Ok(permit) => permit,
+        Err(_) => {
+            return Ok(json_resp(StatusCode::SERVICE_UNAVAILABLE,
+                r#"{"error":"Proxy shutting down"}"#));
+        }
+    };
+
     // Try Claude — if connection fails, fall back to DeepSeek (not a retry loop)
     let resp = match state.client.request(req).await {
         Ok(r) => r,
@@ -220,20 +229,61 @@ pub async fn claude(
                         warn!("Retry after rate-limit succeeded");
                         r
                     }
-                    Ok(r) => {
-                        warn!("Retry still rate-limited, passing through");
-                        r
+                    Ok(_) => {
+                        warn!("Retry still rate-limited, falling back to DeepSeek");
+                        // Fall through to DeepSeek fallback below
+                        resp
                     }
                     Err(e) => {
-                        error!(error = %e, "Retry connection failed");
-                        return Ok(json_resp(StatusCode::BAD_GATEWAY,
-                            r#"{"error":"Claude retry after rate-limit failed"}"#));
+                        warn!(error = %e, "Retry connection failed, falling back to DeepSeek");
+                        // Fall through to DeepSeek fallback below
+                        resp
                     }
                 },
-                Err(_) => resp, // builder failed, pass original 429 through
+                Err(_) => resp, // builder failed, fall through to DeepSeek fallback below
             }
         } else {
-            resp // Long wait or multi-provider: pass through (router will pick fallback next time)
+            resp // Long wait or multi-provider: fall through to DeepSeek fallback below
+        }
+    } else {
+        resp
+    };
+
+    // ── DeepSeek fallback on 429 ────────────────────────────────────────
+    let resp = if resp.status() == StatusCode::TOO_MANY_REQUESTS && !state.config.api_key.is_empty() {
+        warn!("Claude still 429, falling back to DeepSeek");
+
+        let mut ds_body: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+        ds_body["model"] = serde_json::Value::String("deepseek-chat".into());
+        ds_body["temperature"] = serde_json::json!(0);
+        if let serde_json::Value::Object(ref mut m) = ds_body {
+            m.remove("thinking");
+            m.remove("budget_tokens");
+        }
+        crate::context::ensure_fits(&mut ds_body, "deepseek");
+
+        let ds_path = path.replace("/v1/", "/").replace("/v1", "/");
+        let ds_bytes = serde_json::to_vec(&ds_body).unwrap_or_default();
+
+        let ds_req = Request::builder()
+            .method(parts.method.clone())
+            .uri(format!("https://api.deepseek.com/anthropic{}", ds_path))
+            .header("host", "api.deepseek.com")
+            .header("content-type", "application/json")
+            .header("x-api-key", &state.config.api_key)
+            .header("authorization", format!("Bearer {}", &state.config.api_key))
+            .body(full(Bytes::from(ds_bytes)))
+            .unwrap();
+
+        match state.client.request(ds_req).await {
+            Ok(r) => {
+                warn!("DeepSeek fallback on 429 succeeded");
+                r
+            }
+            Err(e) => {
+                error!(error = %e, "DeepSeek fallback also failed, passing 429 through");
+                resp
+            }
         }
     } else {
         resp
@@ -262,6 +312,7 @@ pub async fn claude(
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
 
             tokio::spawn(async move {
+                let _permit = permit; // Hold semaphore permit until stream completes
                 let mut total_bytes = 0u64;
                 let mut usage = tokens::TokenUsage::default();
                 let mut assistant_text = String::with_capacity(4096);
