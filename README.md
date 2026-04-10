@@ -240,20 +240,11 @@ aismush-start
 
 First run offers interactive setup (`aismush --setup`) to configure DeepSeek, OpenRouter, and/or local models — with connection testing for each. Or just paste a DeepSeek key for quick start.
 
+That downloads the latest Windows binary, installs to `%LOCALAPPDATA%\AISmush`, adds to PATH, and gives you `aismush-start` to run the proxy.
+
 That's it. Two commands total: install, then run.
 
-### Windows — Package Managers
-
-```powershell
-# Scoop (recommended)
-scoop bucket add aismush https://github.com/Skunk-Tech/aismush
-scoop install aismush
-
-# winget
-winget install SkunkTech.AISmush
-```
-
-### Windows — One-Line Script
+### Windows
 
 ```powershell
 irm https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.ps1 | iex
