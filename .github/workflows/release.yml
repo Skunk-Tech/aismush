@@ -99,10 +99,12 @@ jobs:
           generate_release_notes: true
 
   # Submit to Windows Package Manager (winget)
+  # Note: requires SkunkTech.AISmush to exist in winget-pkgs — submit first version manually
   winget:
     needs: release
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: windows-latest
+    continue-on-error: true
     steps:
       - uses: vedantmgoyal9/winget-releaser@v2
         with:
