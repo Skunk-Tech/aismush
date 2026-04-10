@@ -388,7 +388,7 @@ pub async fn deepseek(
     project_path: &str,
     comp_original: u64,
     comp_final: u64,
-    _client_format: InboundFormat,
+    client_format: InboundFormat,
     client_name: &str,
     state: &Arc<ProxyState>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
@@ -456,8 +456,14 @@ pub async fn deepseek(
                 )));
             }
 
+            let needs_openai_conversion = client_format == InboundFormat::OpenAI;
             let mut rb = Response::builder().status(status);
-            for (k, v) in resp.headers() { rb = rb.header(k, v); }
+            if needs_openai_conversion {
+                rb = rb.header("content-type", "text/event-stream");
+                rb = rb.header("cache-control", "no-cache");
+            } else {
+                for (k, v) in resp.headers() { rb = rb.header(k, v); }
+            }
 
             let body_stream = resp.into_body();
             let state2 = state.clone();
@@ -475,6 +481,13 @@ pub async fn deepseek(
                 let mut assistant_text = String::with_capacity(4096);
                 let mut sse_buf = String::with_capacity(16384);
                 let mut stream = body_stream;
+                let mut openai_converter = if needs_openai_conversion {
+                    Some(transform::AnthropicToOpenAIStream::new(&model))
+                } else {
+                    None
+                };
+                let mut openai_sse_buf = String::new();
+
                 loop {
                     match stream.frame().await {
                         Some(Ok(frame)) => {
@@ -487,9 +500,20 @@ pub async fn deepseek(
                                         sse_buf.drain(..pos + 2);
                                         parse_sse_event(&event_block, &mut usage, &mut assistant_text);
                                     }
+
+                                    if let Some(ref mut converter) = openai_converter {
+                                        openai_sse_buf.push_str(text);
+                                        let converted = convert_anthropic_sse_events(&mut openai_sse_buf, converter);
+                                        if !converted.is_empty() {
+                                            let out_frame = Frame::data(Bytes::from(converted));
+                                            if tx.send(Ok(out_frame)).await.is_err() { break; }
+                                        }
+                                    }
                                 }
                             }
-                            if tx.send(Ok(frame)).await.is_err() { break; }
+                            if openai_converter.is_none() {
+                                if tx.send(Ok(frame)).await.is_err() { break; }
+                            }
                         }
                         Some(Err(e)) => { let _ = tx.send(Err(e)).await; break; }
                         None => break,
