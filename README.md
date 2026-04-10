@@ -340,6 +340,8 @@ AISmush reads config from (in priority order):
 | `FORCE_PROVIDER` | (none) | Force all requests to a specific provider |
 | `AISMUSH_AUTO_DISCOVER` | `true` | Auto-discover local model servers |
 | `AISMUSH_BLAST_THRESHOLD` | `0.5` | Blast-radius score threshold for tier escalation |
+| `AISMUSH_MAX_CONCURRENT` | `5` | Max concurrent in-flight Claude requests (reduces 429 burst pressure) |
+| `AISMUSH_PROXIES` | (none) | Comma-separated outbound proxy list for Claude requests (see [Proxy Pool](#proxy-pool)) |
 | `ANTHROPIC_BASE_URL` | (none) | Set to `http://localhost:1849` to route any Anthropic client through AISmush |
 | `ANTHROPIC_HOST` | (none) | Goose-specific equivalent of `ANTHROPIC_BASE_URL` — set to `http://localhost:1849` |
 | `OPENAI_HOST` | (none) | Goose-specific variable for OpenAI-compat mode — set to `http://localhost:1849` |
@@ -366,11 +368,50 @@ AISmush reads config from (in priority order):
   },
   "port": 1849,
   "verbose": false,
-  "forceProvider": null
+  "forceProvider": null,
+  "maxConcurrentClaude": 5,
+  "proxies": [
+    "proxy1.host:8080",
+    "proxy2.host:8080:username:password",
+    "socks5://proxy3.host:1080"
+  ]
 }
 ```
 
 `toolMappings` translates tool names between agent dialects. For example, Goose uses `str_replace_editor` while the Anthropic API expects `text_editor`. Add entries here whenever a new agent uses different tool names than the upstream API expects.
+
+### Proxy Pool
+
+Claude rate-limits by API key **and** by IP address. When many developers share a single AISmush server, all requests flow from one IP and can trigger 429 errors even at moderate load.
+
+The proxy pool distributes Claude requests across multiple outbound IP addresses in round-robin order. Each request is sent through the next proxy in the list — no single IP absorbs all the traffic.
+
+**Proxy string formats:**
+
+| Format | Description |
+|--------|-------------|
+| `host:port` | HTTP proxy, no authentication |
+| `host:port:username:password` | HTTP proxy with Basic auth |
+| `socks5://host:port` | SOCKS5 proxy (full URL passed through) |
+| `http://host:port` | HTTP proxy full URL |
+
+**Via environment variable:**
+```bash
+AISMUSH_PROXIES=proxy1.host:8080,proxy2.host:8080:user:pass,socks5://proxy3.host:1080
+```
+
+**Via config file:**
+```json
+{
+  "proxies": [
+    "proxy1.host:8080",
+    "proxy2.host:8080:username:password",
+    "socks5://proxy3.host:1080"
+  ]
+}
+```
+
+If a proxy attempt returns a 429 or connection error, AISmush automatically falls back to a direct Claude connection. Set `AISMUSH_MAX_CONCURRENT` (default `5`) to further throttle burst concurrency and reduce rate-limit pressure at the source.
 
 ### Claude Authentication
 
@@ -413,7 +454,7 @@ Based on real usage with a large Rust/React/Node.js codebase:
 ## Architecture
 
 ```
-21 Rust modules:
+22 Rust modules:
 
 main.rs        — HTTP server + request pipeline
 config.rs      — JSON + env config loading
@@ -436,6 +477,7 @@ cost.rs        — Dynamic pricing + compression-aware cost calculation
 db.rs          — SQLite persistence layer (with date filtering)
 dashboard.rs   — Live HTML dashboard with date range filtering
 state.rs       — Shared state types + provider registry
+proxy_pool.rs  — Round-robin outbound proxy pool for Claude requests (429 defense)
 ```
 
 The `--scan` command fetches and caches the [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) library to `~/.hybrid-proxy/agent-skills/` on first use, then installs from cache on subsequent runs.
@@ -457,7 +499,10 @@ A: No. It sends requests to localhost instead of api.anthropic.com, but the API 
 A: DeepSeek 500/502 errors return immediately with a clear message. Set `FORCE_PROVIDER=claude` to bypass.
 
 **Q: What if Claude is down or rate-limited?**
-A: The proxy automatically falls back to DeepSeek — it trims context to fit DeepSeek's window and sends the request there. Your work is never blocked. Both providers have to be down simultaneously for a request to fail.
+A: AISmush has two layers of 429 defense. First, `AISMUSH_MAX_CONCURRENT` (default 5) throttles burst concurrency so you don't overload Claude's rate limits in the first place. Second, if Claude still returns a 429, the proxy automatically falls back to DeepSeek — it trims context to fit DeepSeek's window and sends the request there. Your work is never blocked. Both providers have to be unreachable simultaneously for a request to fail.
+
+**Q: I'm running a shared server and everyone keeps hitting 429s from Claude.**
+A: Claude rate-limits by IP address. When a team shares one AISmush instance, all requests come from the same IP. Configure a proxy pool with `AISMUSH_PROXIES=proxy1:8080,proxy2:8080:user:pass` (or the `proxies` array in your config). AISmush round-robins each Claude request across the pool, distributing traffic across multiple IPs so no single address hits the rate limit. See [Proxy Pool](#proxy-pool) for full format details.
 
 **Q: Is my data sent anywhere?**
 A: Your requests go to the same APIs you'd normally use (Anthropic + DeepSeek). The proxy runs locally — no third-party servers, no telemetry, no data collection.

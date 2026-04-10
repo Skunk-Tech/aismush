@@ -242,27 +242,27 @@ a:hover { text-decoration: underline; }
 <!-- ANNOUNCEMENT BANNER -->
 <div class="container">
 <div class="announcement">
-  <div class="new-badge">v1.0 — Major Release</div>
-  <h2>Now Works With Every AI Coding Agent</h2>
-  <p>Claude Code, Goose, Aider, or anything that talks to an LLM API. One proxy gives every agent compression, caching, memory, smart routing, and cost tracking — <strong style="color:#fff">automatically</strong>.</p>
+  <div class="new-badge">v1.1.5 — Just Shipped</div>
+  <h2>Proxy Pool: Eliminate 429s at Scale</h2>
+  <p>Claude rate-limits by IP. When a team shares one AISmush server, all requests hit the same IP and 429s pile up. New in v1.1.5: configure a round-robin proxy pool so no single IP ever takes the full load. <strong style="color:#fff">No more rate limit walls.</strong></p>
   <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-top:20px;position:relative">
     <div style="background:rgba(0,0,0,0.3);border-radius:10px;padding:16px 24px;text-align:center;min-width:140px">
-      <div style="font-size:24px;margin-bottom:4px">&#x1F4BB;</div>
-      <div style="color:var(--purple);font-weight:700;font-size:15px">Claude Code</div>
-      <div style="color:var(--dim);font-size:12px;margin-top:4px">Just run <code style="color:var(--green);font-size:11px">aismush-start</code></div>
+      <div style="font-size:24px;margin-bottom:4px">&#x1F504;</div>
+      <div style="color:var(--green);font-weight:700;font-size:15px">Round-Robin Pool</div>
+      <div style="color:var(--dim);font-size:12px;margin-top:4px">HTTP, HTTPS, SOCKS5</div>
     </div>
     <div style="background:rgba(0,0,0,0.3);border-radius:10px;padding:16px 24px;text-align:center;min-width:140px">
-      <div style="font-size:24px;margin-bottom:4px">&#x1F9AA;</div>
-      <div style="color:var(--green);font-weight:700;font-size:15px">Goose</div>
-      <div style="color:var(--dim);font-size:12px;margin-top:4px">One env var, done</div>
+      <div style="font-size:24px;margin-bottom:4px">&#x1F6A6;</div>
+      <div style="color:var(--purple);font-weight:700;font-size:15px">Rate Limit Defense</div>
+      <div style="color:var(--dim);font-size:12px;margin-top:4px">+ concurrency throttling</div>
     </div>
     <div style="background:rgba(0,0,0,0.3);border-radius:10px;padding:16px 24px;text-align:center;min-width:140px">
-      <div style="font-size:24px;margin-bottom:4px">&#x1F527;</div>
-      <div style="color:var(--blue);font-weight:700;font-size:15px">Any Agent</div>
-      <div style="color:var(--dim);font-size:12px;margin-top:4px">Anthropic or OpenAI API</div>
+      <div style="font-size:24px;margin-bottom:4px">&#x1F6E1;&#xFE0F;</div>
+      <div style="color:var(--blue);font-weight:700;font-size:15px">Auto Fallback</div>
+      <div style="color:var(--dim);font-size:12px;margin-top:4px">Direct connect on failure</div>
     </div>
   </div>
-  <p style="color:var(--dim);font-size:13px;margin-top:20px;position:relative">Install AISmush, start it, point your agent at <code style="color:var(--green);background:rgba(0,0,0,0.3);padding:1px 6px;border-radius:4px;font-size:12px">localhost:1849</code>. That's it. <a href="https://github.com/Skunk-Tech/aismush#supported-clients" style="color:var(--blue)">Setup guide &rarr;</a></p>
+  <p style="color:var(--dim);font-size:13px;margin-top:20px;position:relative">Set <code style="color:var(--green);background:rgba(0,0,0,0.3);padding:1px 6px;border-radius:4px;font-size:12px">AISMUSH_PROXIES=host:port,host:port:user:pass</code> or add a <code style="color:var(--green);background:rgba(0,0,0,0.3);padding:1px 6px;border-radius:4px;font-size:12px">"proxies"</code> array to your config. <a href="https://github.com/Skunk-Tech/aismush#proxy-pool" style="color:var(--blue)">Full docs &rarr;</a></p>
 </div>
 </div>
 
@@ -564,6 +564,40 @@ a:hover { text-decoration: underline; }
     </div>
   </div>
 
+  <!-- Feature 9: Proxy Pool -->
+  <div class="feature-block">
+    <div class="feature-content">
+      <span class="tag tag-new">New in v1.1.5</span>
+      <h3>Proxy Pool — Rotate IPs, Kill 429s</h3>
+      <p>Claude rate-limits by IP address. One server, one IP, many users = 429 errors. The proxy pool distributes every Claude request across a list of outbound proxies in round-robin order — so no single IP ever absorbs the full load.</p>
+      <p>Combine with <code style="font-family:var(--mono);font-size:12px;color:var(--green)">AISMUSH_MAX_CONCURRENT</code> to throttle burst concurrency and keep rate pressure low at the source.</p>
+      <ul>
+        <li>HTTP, authenticated HTTP (<code>host:port:user:pass</code>), and SOCKS5</li>
+        <li>Round-robin — one proxy per request, automatically</li>
+        <li>Automatic fallback to direct connection on proxy failure</li>
+        <li>Zero changes to your agent or workflow</li>
+        <li>Works alongside DeepSeek fallback for double-layer 429 defense</li>
+      </ul>
+    </div>
+    <div class="feature-visual">
+      <span class="comment"># config.json</span><br>
+      {<br>
+      &nbsp;&nbsp;<span class="highlight">"proxies"</span>: [<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="cmd">"proxy1.host:8080"</span>,<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="cmd">"proxy2.host:8080:user:pass"</span>,<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="cmd">"socks5://proxy3.host:1080"</span><br>
+      &nbsp;&nbsp;],<br>
+      &nbsp;&nbsp;<span class="highlight">"maxConcurrentClaude"</span>: 5<br>
+      }<br><br>
+      <span class="comment"># Each Claude request rotates:</span><br>
+      Request 1 → <span class="purple">proxy1</span> (1.2.3.4)<br>
+      Request 2 → <span class="cmd">proxy2</span> (5.6.7.8)<br>
+      Request 3 → <span class="purple">proxy3</span> (9.10.11.12)<br>
+      Request 4 → <span class="cmd">proxy1</span> (1.2.3.4) ...<br><br>
+      <span class="highlight">Distributed load = no rate limit walls</span>
+    </div>
+  </div>
+
 </div>
 </div>
 
@@ -624,10 +658,9 @@ a:hover { text-decoration: underline; }
   <div class="code-block" onclick="copyInstall(this)">
     curl -fsSL https://raw.githubusercontent.com/Skunk-Tech/aismush/main/install.sh | bash
   </div>
-  <p style="color:var(--dim);font-size:13px;margin-top:16px;margin-bottom:8px">Windows — Scoop (recommended):</p>
-  <div class="code-block" onclick="copyInstall(this)">
-    scoop bucket add aismush https://github.com/Skunk-Tech/aismush && scoop install aismush
-  </div>
+  <p style="color:var(--dim);font-size:13px;margin-top:16px;margin-bottom:8px">Windows — Scoop (recommended, run both lines):</p>
+  <div class="code-block" onclick="copyInstall(this)" style="display:block">scoop bucket add aismush https://github.com/Skunk-Tech/aismush</div>
+  <div class="code-block" onclick="copyInstall(this)" style="display:block;margin-top:6px">scoop install aismush</div>
   <p style="color:var(--dim);font-size:13px;margin-top:16px;margin-bottom:8px">Windows — winget:</p>
   <div class="code-block" onclick="copyInstall(this)">
     winget install SkunkTech.AISmush
