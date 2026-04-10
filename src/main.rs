@@ -948,7 +948,7 @@ async fn run_scan(args: &[String]) {
     }
 
     // Step 1: Scan filesystem
-    eprintln!("  [1/6] Scanning filesystem...");
+    eprintln!("  [1/7] Scanning filesystem...");
     let profile = scan::scan_project(&project_path);
     eprintln!("        Found {} files", profile.total_files);
     eprintln!("        Sampled {} config files + {} code files",
@@ -971,7 +971,7 @@ async fn run_scan(args: &[String]) {
     match scan::run_pipeline(&profile, &existing, cfg.port, &cfg.api_key, use_claude).await {
         Ok(result) => {
             // Write artifacts
-            eprintln!("  [6/6] Writing artifacts...");
+            eprintln!("  Writing artifacts...");
             let summary = scan::write_artifacts(&project_path, &result, force);
 
             eprintln!();

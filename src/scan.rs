@@ -331,7 +331,7 @@ pub async fn run_pipeline(
 ) -> Result<ScanResult, String> {
     // Step 1: Analysis
     let provider_name = if use_claude { "Claude" } else { "DeepSeek" };
-    eprintln!("  [2/6] Analyzing project (via {})...", provider_name);
+    eprintln!("  [2/7] Analyzing project (via {})...", provider_name);
     let analysis_prompt = prompts::analysis_prompt(
         profile.total_files,
         &profile.ext_summary(),
@@ -350,7 +350,7 @@ pub async fn run_pipeline(
     eprintln!("        Type: {} ({})", ptype, complexity);
 
     // Step 2: Planning
-    eprintln!("  [3/6] Planning agents and skills...");
+    eprintln!("  [3/7] Planning agents and skills...");
     let existing_list = if existing.agents.is_empty() {
         "None".to_string()
     } else {
@@ -365,7 +365,7 @@ pub async fn run_pipeline(
     eprintln!("        Will generate: {} agents, {} skills", planned_agents, planned_skills);
 
     // Step 3-5: Per-domain agent generation
-    eprintln!("  [4/6] Generating domain-specific content...");
+    eprintln!("  [4/7] Generating domain-specific content...");
     let mut agent_outputs: Vec<String> = Vec::new();
 
     // Load existing agents so synthesis has the full picture
@@ -417,7 +417,7 @@ pub async fn run_pipeline(
     }
 
     // Step 5: Generate skills one at a time (not a massive synthesis)
-    eprintln!("  [5/6] Generating skills...");
+    eprintln!("  [5/7] Generating skills...");
     let mut skill_entries: Vec<serde_json::Value> = Vec::new();
 
     if let Some(skills) = plan["skills"].as_array() {
@@ -446,8 +446,17 @@ pub async fn run_pipeline(
         }
     }
 
-    // Step 6: Generate CLAUDE.md (single focused AI call)
-    eprintln!("  [6/6] Generating CLAUDE.md...");
+    // Step 6: Install engineering workflow skills (agent-skills by Addy Osmani)
+    eprintln!("  [6/7] Installing engineering workflows...");
+    let eng_installed = install_engineering_skills(&profile.root, &existing.skills);
+    if eng_installed > 0 {
+        eprintln!("        Installed {} engineering workflow skills", eng_installed);
+    } else {
+        eprintln!("        All engineering skills already present");
+    }
+
+    // Step 7: Generate CLAUDE.md (single focused AI call)
+    eprintln!("  [7/7] Generating CLAUDE.md...");
     let claude_md = if existing.has_claude_md {
         eprintln!("        Skipping (exists, use --force to overwrite)");
         None
@@ -588,6 +597,114 @@ pub struct WriteSummary {
     pub skills_skipped: usize,
     pub claude_md_created: bool,
     pub claude_md_skipped: bool,
+}
+
+// ── Engineering skills (agent-skills by Addy Osmani, MIT licensed) ──────────
+
+/// Download agent-skills repo to cache and install all skills into the project.
+/// Returns number of skills installed (skips existing).
+fn install_engineering_skills(project_root: &Path, existing_skills: &[String]) -> usize {
+    let cache_dir = dirs_home().join(".hybrid-proxy").join("agent-skills");
+    let skills_src = cache_dir.join("skills");
+
+    // Clone or update the repo
+    if !skills_src.exists() {
+        eprintln!("        Downloading engineering skills...");
+        let status = std::process::Command::new("git")
+            .args(["clone", "--depth", "1", "--single-branch",
+                   "https://github.com/addyosmani/agent-skills.git",
+                   cache_dir.to_str().unwrap_or(".")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        if status.map(|s| !s.success()).unwrap_or(true) {
+            eprintln!("        Failed to download (git clone failed). Skipping engineering skills.");
+            return 0;
+        }
+    } else {
+        // Try a quick pull to stay current (non-blocking, failure is fine)
+        let _ = std::process::Command::new("git")
+            .args(["-C", cache_dir.to_str().unwrap_or("."), "pull", "--ff-only"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    // Read all skill directories from the cached repo
+    let skill_dirs = match fs::read_dir(&skills_src) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect::<Vec<_>>(),
+        Err(_) => {
+            eprintln!("        Cache exists but can't read skills directory. Skipping.");
+            return 0;
+        }
+    };
+
+    let target_skills_dir = project_root.join(".claude").join("skills");
+    fs::create_dir_all(&target_skills_dir).ok();
+
+    let mut installed = 0;
+
+    for entry in &skill_dirs {
+        let skill_name = entry.file_name();
+        let skill_name_str = skill_name.to_string_lossy();
+
+        // Skip if already exists in project
+        if existing_skills.iter().any(|s| s == skill_name_str.as_ref()) {
+            continue;
+        }
+
+        let target_dir = target_skills_dir.join(&skill_name);
+        if target_dir.exists() {
+            continue;
+        }
+
+        // Find the SKILL.md file in the source
+        let source_skill = entry.path().join("SKILL.md");
+        if !source_skill.exists() {
+            continue;
+        }
+
+        // Copy the skill directory contents
+        fs::create_dir_all(&target_dir).ok();
+        if let Ok(content) = fs::read_to_string(&source_skill) {
+            if fs::write(target_dir.join("SKILL.md"), &content).is_ok() {
+                installed += 1;
+            }
+        }
+    }
+
+    // Also copy agents if they exist (agent-skills has 3 specialist personas)
+    let agents_src = cache_dir.join("agents");
+    if agents_src.exists() {
+        let agents_dir = project_root.join(".claude").join("agents");
+        fs::create_dir_all(&agents_dir).ok();
+
+        if let Ok(entries) = fs::read_dir(&agents_src) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                    let target = agents_dir.join(entry.file_name());
+                    if !target.exists() {
+                        if let Ok(content) = fs::read_to_string(&path) {
+                            fs::write(&target, content).ok();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    installed
+}
+
+fn dirs_home() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
