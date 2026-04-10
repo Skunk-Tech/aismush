@@ -1,9 +1,11 @@
 use bytes::Bytes;
+use futures_core::Stream;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::Frame;
 use hyper::{Request, Response, StatusCode};
 use serde_json::Value;
 use std::convert::Infallible;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, warn};
@@ -84,12 +86,170 @@ fn parse_sse_event(block: &str, usage: &mut tokens::TokenUsage, assistant_text: 
     }
 }
 
+/// Body source for a Claude response — either a direct hyper body or a proxied reqwest stream.
+enum StreamSource {
+    Hyper(BoxBody<Bytes, hyper::Error>),
+    Reqwest(Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>),
+}
+
+/// Holds all mutable SSE processing state for the streaming spawn.
+/// `process_chunk` is called for every chunk of bytes received from Claude.
+/// Returns converted bytes when in OpenAI mode, otherwise None (caller sends raw frame).
+struct SseProcessor {
+    total_bytes: u64,
+    usage: tokens::TokenUsage,
+    assistant_text: String,
+    sse_buf: String,
+    openai_converter: Option<transform::AnthropicToOpenAIStream>,
+    openai_sse_buf: String,
+}
+
+impl SseProcessor {
+    fn new(needs_openai_conversion: bool, model: &str) -> Self {
+        Self {
+            total_bytes: 0,
+            usage: tokens::TokenUsage::default(),
+            assistant_text: String::with_capacity(4096),
+            sse_buf: String::with_capacity(16384),
+            openai_converter: if needs_openai_conversion {
+                Some(transform::AnthropicToOpenAIStream::new(model))
+            } else {
+                None
+            },
+            openai_sse_buf: String::new(),
+        }
+    }
+
+    /// Process a raw bytes chunk. Returns Some(converted_bytes) when in OpenAI mode and
+    /// converted output is available; None otherwise (caller should pass raw bytes through).
+    fn process_chunk(&mut self, data: &[u8]) -> Option<Bytes> {
+        self.total_bytes += data.len() as u64;
+        if let Ok(text) = std::str::from_utf8(data) {
+            self.sse_buf.push_str(text);
+            while let Some(pos) = self.sse_buf.find("\n\n") {
+                let event_block = self.sse_buf[..pos].to_string();
+                self.sse_buf.drain(..pos + 2);
+                parse_sse_event(&event_block, &mut self.usage, &mut self.assistant_text);
+            }
+            if let Some(ref mut converter) = self.openai_converter {
+                self.openai_sse_buf.push_str(text);
+                let converted = convert_anthropic_sse_events(&mut self.openai_sse_buf, converter);
+                if !converted.is_empty() {
+                    return Some(Bytes::from(converted));
+                }
+            }
+        }
+        None
+    }
+
+    fn flush(&mut self) {
+        if !self.sse_buf.is_empty() {
+            parse_sse_event(&self.sse_buf, &mut self.usage, &mut self.assistant_text);
+        }
+    }
+}
+
 pub fn json_resp(status: StatusCode, body: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
     Response::builder()
         .status(status)
         .header("content-type", "application/json")
         .body(full(Bytes::from(body.to_string())))
         .unwrap()
+}
+
+/// Send a request directly to Claude via the hyper client (no proxy).
+/// Returns (status, headers_vec, StreamSource) or falls back to DeepSeek on connection error.
+async fn send_direct_claude(
+    state: &Arc<ProxyState>,
+    parts: &hyper::http::request::Parts,
+    body: &Bytes,
+    path: &str,
+) -> Result<(StatusCode, Vec<(String, String)>, StreamSource), Infallible> {
+    let mut builder = Request::builder()
+        .method(parts.method.clone())
+        .uri(format!("https://api.anthropic.com{}", path));
+    for (k, v) in &parts.headers {
+        if k == "host" || k == "connection" || k == "content-length" { continue; }
+        builder = builder.header(k, v);
+    }
+    builder = builder.header("host", "api.anthropic.com");
+
+    match builder.body(full(body.clone())) {
+        Ok(req) => match state.client.request(req).await {
+            Ok(r) => {
+                let status = r.status();
+                let headers = r.headers().iter()
+                    .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
+                    .collect();
+                Ok((status, headers, StreamSource::Hyper(r.into_body().boxed())))
+            }
+            Err(e) => {
+                warn!(error = %e, "Claude direct connection failed");
+                match deepseek_fallback(state, body, path).await {
+                    Ok(triple) => Ok(triple),
+                    Err(msg) => Ok((StatusCode::BAD_GATEWAY, err_headers(), StreamSource::Hyper(full(msg)))),
+                }
+            }
+        },
+        Err(e) => {
+            error!(error = %e, "Failed to build Claude request");
+            Ok((StatusCode::INTERNAL_SERVER_ERROR, err_headers(),
+                StreamSource::Hyper(full(format!(r#"{{"error":"{}"}}"#, e)))))
+        }
+    }
+}
+
+fn err_headers() -> Vec<(String, String)> {
+    vec![("content-type".into(), "application/json".into())]
+}
+
+/// Fall back to DeepSeek when Claude is unreachable.
+/// Returns Ok(triple) on success, or Err(json_error_string) when both fail.
+async fn deepseek_fallback(
+    state: &Arc<ProxyState>,
+    body: &Bytes,
+    path: &str,
+) -> Result<(StatusCode, Vec<(String, String)>, StreamSource), String> {
+    if state.config.api_key.is_empty() {
+        return Err(r#"{"error":"Claude connection failed. Configure a DeepSeek key for automatic fallback."}"#.into());
+    }
+
+    warn!("Falling back to DeepSeek on Claude connection failure");
+    let mut ds_body: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+    ds_body["model"] = serde_json::Value::String("deepseek-chat".into());
+    ds_body["temperature"] = serde_json::json!(0);
+    if let serde_json::Value::Object(ref mut m) = ds_body {
+        m.remove("thinking");
+        m.remove("budget_tokens");
+    }
+    crate::context::ensure_fits(&mut ds_body, "deepseek");
+    let ds_path = path.replace("/v1/", "/").replace("/v1", "/");
+    let ds_bytes = serde_json::to_vec(&ds_body).unwrap_or_default();
+
+    let ds_req = Request::builder()
+        .method(hyper::Method::POST)
+        .uri(format!("https://api.deepseek.com/anthropic{}", ds_path))
+        .header("host", "api.deepseek.com")
+        .header("content-type", "application/json")
+        .header("x-api-key", &state.config.api_key)
+        .header("authorization", format!("Bearer {}", &state.config.api_key))
+        .body(full(Bytes::from(ds_bytes)))
+        .unwrap();
+
+    match state.client.request(ds_req).await {
+        Ok(r) => {
+            warn!("DeepSeek fallback succeeded");
+            let status = r.status();
+            let headers = r.headers().iter()
+                .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
+                .collect();
+            Ok((status, headers, StreamSource::Hyper(r.into_body().boxed())))
+        }
+        Err(e) => {
+            error!(error = %e, "Both Claude and DeepSeek failed");
+            Err(r#"{"error":"Both Claude and DeepSeek connections failed. Check your network."}"#.into())
+        }
+    }
 }
 
 /// Forward request to Claude API.
@@ -109,25 +269,6 @@ pub async fn claude(
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
     let start = Instant::now();
 
-    let mut builder = Request::builder()
-        .method(parts.method.clone())
-        .uri(format!("https://api.anthropic.com{}", path));
-
-    for (k, v) in &parts.headers {
-        // Skip headers that we set ourselves or that are invalid after body modification
-        if k == "host" || k == "connection" || k == "content-length" { continue; }
-        builder = builder.header(k, v);
-    }
-    builder = builder.header("host", "api.anthropic.com");
-
-    let req = match builder.body(full(body.clone())) {
-        Ok(r) => r,
-        Err(e) => {
-            error!(error = %e, "Failed to build Claude request");
-            return Ok(json_resp(StatusCode::INTERNAL_SERVER_ERROR, &format!(r#"{{"error":"{}"}}"#, e)));
-        }
-    };
-
     // Limit concurrent in-flight requests to Claude to avoid 429s
     let permit = match state.claude_semaphore.clone().acquire_owned().await {
         Ok(permit) => permit,
@@ -137,65 +278,52 @@ pub async fn claude(
         }
     };
 
-    // Try Claude — if connection fails, fall back to DeepSeek (not a retry loop)
-    let resp = match state.client.request(req).await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(error = %e, "Claude connection failed");
+    // ── Send to Claude ────────────────────────────────────────────────
+    // Try via proxy pool first (if configured), fall back to direct connection.
+    // On connection error from either path, fall back to DeepSeek.
+    let (resp_status, resp_headers, stream_source) = if let Some(pool) = &state.proxy_pool {
+        let proxy_client = pool.next();
+        let proxy_url = format!("https://api.anthropic.com{}", path);
+        let mut rb = proxy_client.request(parts.method.clone(), &proxy_url);
+        for (k, v) in &parts.headers {
+            if k == "host" || k == "connection" || k == "content-length" { continue; }
+            rb = rb.header(k, v);
+        }
+        rb = rb.header("host", "api.anthropic.com");
 
-            // Don't retry Claude — fall back to DeepSeek with trimmed context
-            if !state.config.api_key.is_empty() {
-                warn!("Falling back to DeepSeek (trimming context to fit)");
-
-                // Build DeepSeek request from original body
-                let mut ds_body: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
-                ds_body["model"] = serde_json::Value::String("deepseek-chat".into());
-                ds_body["temperature"] = serde_json::json!(0);
-                if let serde_json::Value::Object(ref mut m) = ds_body {
-                    m.remove("thinking");
-                    m.remove("budget_tokens");
-                }
-                // Aggressively trim to fit DeepSeek window
-                crate::context::ensure_fits(&mut ds_body, "deepseek");
-
-                let ds_path = path.replace("/v1/", "/").replace("/v1", "/");
-                let ds_bytes = serde_json::to_vec(&ds_body).unwrap_or_default();
-
-                let ds_req = Request::builder()
-                    .method(hyper::Method::POST)
-                    .uri(format!("https://api.deepseek.com/anthropic{}", ds_path))
-                    .header("host", "api.deepseek.com")
-                    .header("content-type", "application/json")
-                    .header("x-api-key", &state.config.api_key)
-                    .header("authorization", format!("Bearer {}", &state.config.api_key))
-                    .body(full(Bytes::from(ds_bytes)))
-                    .unwrap();
-
-                match state.client.request(ds_req).await {
-                    Ok(r) => {
-                        warn!("DeepSeek fallback succeeded");
-                        r
-                    }
-                    Err(e2) => {
-                        error!(error = %e2, "Both Claude and DeepSeek failed");
-                        return Ok(json_resp(StatusCode::BAD_GATEWAY,
-                            r#"{"error":"Both Claude and DeepSeek connections failed. Check your network."}"#));
-                    }
-                }
-            } else {
-                error!("Claude failed and no DeepSeek key configured");
-                return Ok(json_resp(StatusCode::BAD_GATEWAY,
-                    r#"{"error":"Claude connection failed. Configure a DeepSeek key for automatic fallback."}"#));
+        match rb.body(body.clone()).send().await {
+            Ok(r) if r.status() != StatusCode::TOO_MANY_REQUESTS => {
+                warn!(proxy_idx = pool.len(), "Claude via proxy");
+                let status = r.status();
+                let headers: Vec<(String, String)> = r.headers().iter()
+                    .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
+                    .collect();
+                let source = StreamSource::Reqwest(Box::pin(r.bytes_stream()));
+                (status, headers, source)
+            }
+            Ok(_) => {
+                warn!("Proxy got 429, retrying direct");
+                send_direct_claude(state, parts, body, path).await?
+            }
+            Err(e) => {
+                warn!(error = %e, "Proxy failed, retrying direct");
+                send_direct_claude(state, parts, body, path).await?
             }
         }
+    } else {
+        send_direct_claude(state, parts, body, path).await?
     };
 
+    // Reconstruct a lightweight response handle for the 429/fallback logic below.
+    // We use a small wrapper so the existing logic stays readable.
+    struct RespHandle { status: StatusCode, headers: Vec<(String, String)>, source: StreamSource }
+    let resp = RespHandle { status: resp_status, headers: resp_headers, source: stream_source };
+
     // ── Rate-limit detection ─────────────────────────────────────────
-    let resp = if resp.status() == StatusCode::TOO_MANY_REQUESTS {
-        let retry_after = resp.headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
+    let resp = if resp.status == StatusCode::TOO_MANY_REQUESTS {
+        let retry_after = resp.headers.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("retry-after"))
+            .and_then(|(_, v)| v.parse::<u64>().ok())
             .unwrap_or(10);
 
         // Mark Claude as rate-limited in registry
@@ -203,54 +331,33 @@ pub async fn claude(
             provider.mark_rate_limited(retry_after);
         }
         state.rate_limit_pressure.store(
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         warn!(retry_after_secs = retry_after, "Claude rate-limited (429)");
 
-        // In direct mode with short wait: hold and retry once
+        // In direct mode with short wait: hold and retry once via direct connection
         if retry_after <= 5 && state.config.force_provider.as_deref() == Some("claude") {
             warn!(wait_secs = retry_after, "Short rate-limit, retrying after wait");
             tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
 
-            // Rebuild and retry the request
-            let mut retry_builder = Request::builder()
-                .method(parts.method.clone())
-                .uri(format!("https://api.anthropic.com{}", path));
-            for (k, v) in &parts.headers {
-                if k == "host" || k == "connection" || k == "content-length" { continue; }
-                retry_builder = retry_builder.header(k, v);
-            }
-            retry_builder = retry_builder.header("host", "api.anthropic.com");
-
-            match retry_builder.body(full(body.clone())) {
-                Ok(retry_req) => match state.client.request(retry_req).await {
-                    Ok(r) if r.status() != StatusCode::TOO_MANY_REQUESTS => {
-                        warn!("Retry after rate-limit succeeded");
-                        r
-                    }
-                    Ok(_) => {
-                        warn!("Retry still rate-limited, falling back to DeepSeek");
-                        // Fall through to DeepSeek fallback below
-                        resp
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Retry connection failed, falling back to DeepSeek");
-                        // Fall through to DeepSeek fallback below
-                        resp
-                    }
-                },
-                Err(_) => resp, // builder failed, fall through to DeepSeek fallback below
+            let (s, h, src) = send_direct_claude(state, parts, body, path).await?;
+            if s != StatusCode::TOO_MANY_REQUESTS {
+                warn!("Retry after rate-limit succeeded");
+                RespHandle { status: s, headers: h, source: src }
+            } else {
+                warn!("Retry still rate-limited, falling back to DeepSeek");
+                resp
             }
         } else {
-            resp // Long wait or multi-provider: fall through to DeepSeek fallback below
+            resp
         }
     } else {
         resp
     };
 
     // ── DeepSeek fallback on 429 ────────────────────────────────────────
-    let resp = if resp.status() == StatusCode::TOO_MANY_REQUESTS && !state.config.api_key.is_empty() {
+    let resp = if resp.status == StatusCode::TOO_MANY_REQUESTS && !state.config.api_key.is_empty() {
         warn!("Claude still 429, falling back to DeepSeek");
 
         let mut ds_body: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
@@ -278,7 +385,11 @@ pub async fn claude(
         match state.client.request(ds_req).await {
             Ok(r) => {
                 warn!("DeepSeek fallback on 429 succeeded");
-                r
+                let status = r.status();
+                let headers = r.headers().iter()
+                    .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
+                    .collect();
+                RespHandle { status, headers, source: StreamSource::Hyper(r.into_body().boxed()) }
             }
             Err(e) => {
                 error!(error = %e, "DeepSeek fallback also failed, passing 429 through");
@@ -290,18 +401,16 @@ pub async fn claude(
     };
 
     {
-            let status = resp.status();
             let needs_openai_conversion = client_format == InboundFormat::OpenAI;
-            let mut rb = Response::builder().status(status);
+            let mut rb = Response::builder().status(resp.status);
             if needs_openai_conversion {
-                // OpenAI clients expect these headers
                 rb = rb.header("content-type", "text/event-stream");
                 rb = rb.header("cache-control", "no-cache");
             } else {
-                for (k, v) in resp.headers() { rb = rb.header(k, v); }
+                for (k, v) in &resp.headers { rb = rb.header(k.as_str(), v.as_str()); }
             }
 
-            let body_stream = resp.into_body();
+            let source = resp.source;
             let state2 = state.clone();
             let model = model.to_string();
             let reason = route_reason.to_string();
@@ -313,58 +422,50 @@ pub async fn claude(
 
             tokio::spawn(async move {
                 let _permit = permit; // Hold semaphore permit until stream completes
-                let mut total_bytes = 0u64;
-                let mut usage = tokens::TokenUsage::default();
-                let mut assistant_text = String::with_capacity(4096);
-                let mut sse_buf = String::with_capacity(16384);
-                let mut stream = body_stream;
-                let mut openai_converter = if needs_openai_conversion {
-                    Some(transform::AnthropicToOpenAIStream::new(&model))
-                } else {
-                    None
-                };
-                let mut openai_sse_buf = String::new();
+                let mut proc = SseProcessor::new(needs_openai_conversion, &model);
 
-                loop {
-                    match stream.frame().await {
-                        Some(Ok(frame)) => {
-                            if let Some(data) = frame.data_ref() {
-                                total_bytes += data.len() as u64;
-                                if let Ok(text) = std::str::from_utf8(data) {
-                                    // Parse SSE events incrementally for usage/text capture
-                                    sse_buf.push_str(text);
-                                    while let Some(pos) = sse_buf.find("\n\n") {
-                                        let event_block = sse_buf[..pos].to_string();
-                                        sse_buf.drain(..pos + 2);
-                                        parse_sse_event(&event_block, &mut usage, &mut assistant_text);
-                                    }
-
-                                    // Convert and send to client
-                                    if let Some(ref mut converter) = openai_converter {
-                                        openai_sse_buf.push_str(text);
-                                        let converted = convert_anthropic_sse_events(&mut openai_sse_buf, converter);
-                                        if !converted.is_empty() {
-                                            let out_frame = Frame::data(Bytes::from(converted));
-                                            if tx.send(Ok(out_frame)).await.is_err() { break; }
+                match source {
+                    StreamSource::Hyper(mut body) => {
+                        loop {
+                            match body.frame().await {
+                                Some(Ok(frame)) => {
+                                    if let Some(data) = frame.data_ref() {
+                                        if let Some(converted) = proc.process_chunk(data) {
+                                            if tx.send(Ok(Frame::data(converted))).await.is_err() { break; }
                                         }
                                     }
+                                    if proc.openai_converter.is_none() {
+                                        if tx.send(Ok(frame)).await.is_err() { break; }
+                                    }
                                 }
-                            }
-                            // Pass through raw frame for Anthropic clients
-                            if openai_converter.is_none() {
-                                if tx.send(Ok(frame)).await.is_err() { break; }
+                                Some(Err(e)) => { let _ = tx.send(Err(e)).await; break; }
+                                None => break,
                             }
                         }
-                        Some(Err(e)) => { let _ = tx.send(Err(e)).await; break; }
-                        None => break,
+                    }
+                    StreamSource::Reqwest(mut stream) => {
+                        use tokio_stream::StreamExt as _;
+                        while let Some(chunk) = stream.next().await {
+                            match chunk {
+                                Ok(data) => {
+                                    if let Some(converted) = proc.process_chunk(&data) {
+                                        if tx.send(Ok(Frame::data(converted))).await.is_err() { break; }
+                                    } else if proc.openai_converter.is_none() {
+                                        if tx.send(Ok(Frame::data(data))).await.is_err() { break; }
+                                    }
+                                }
+                                Err(e) => { warn!(error = %e, "Proxy stream error"); break; }
+                            }
+                        }
                     }
                 }
-                // Flush remaining SSE buffer
-                if !sse_buf.is_empty() {
-                    parse_sse_event(&sse_buf, &mut usage, &mut assistant_text);
-                }
+
+                proc.flush();
 
                 let latency = start.elapsed().as_millis() as u64;
+                let total_bytes = proc.total_bytes;
+                let usage = proc.usage;
+                let assistant_text = proc.assistant_text;
 
                 // Fallback token estimate if SSE parsing returned 0
                 let input_tokens = if usage.input_tokens > 0 { usage.input_tokens } else { (total_bytes / 4) as u64 };
@@ -383,7 +484,6 @@ pub async fn claude(
                 }
 
                 if let Some(ref db) = state2.db {
-                    // Compression savings: what these compressed-away tokens would have cost on Claude
                     let comp_savings = if comp_tokens_saved > 0 {
                         let (input_price, _) = crate::cost::get_pricing("claude", &model);
                         comp_tokens_saved as f64 * input_price / 1_000_000.0
@@ -397,7 +497,6 @@ pub async fn claude(
                         comp_original, comp_final, comp_savings,
                     ).await;
 
-                    // Capture full conversation turn
                     if !user_msg.is_empty() || !assistant_text.is_empty() {
                         let conv_id = capture::get_or_create_conversation(db, &project, false).await;
                         let embedder_guard = state2.embedder.read().await;

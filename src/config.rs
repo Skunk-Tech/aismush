@@ -23,6 +23,8 @@ pub struct ProxyConfig {
     pub tool_mappings: Option<crate::tools::ToolMappings>,
     /// Max concurrent in-flight requests to Claude (default 5)
     pub max_concurrent_claude: usize,
+    /// Outbound proxy strings for Claude requests (round-robined)
+    pub proxies: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +63,7 @@ struct FileConfig {
     routing: Option<RoutingFileConfig>,
     tool_mappings: Option<crate::tools::ToolMappings>,
     max_concurrent_claude: Option<usize>,
+    proxies: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -162,7 +165,14 @@ impl ProxyConfig {
             .or(file_cfg.max_concurrent_claude)
             .unwrap_or(5);
 
-        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, local_servers, auto_discover_local, routing, tool_mappings, max_concurrent_claude }
+        // AISMUSH_PROXIES=host:port,host:port:user:pass,...
+        let proxies = env::var("AISMUSH_PROXIES")
+            .ok()
+            .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>())
+            .or(file_cfg.proxies)
+            .unwrap_or_default();
+
+        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, local_servers, auto_discover_local, routing, tool_mappings, max_concurrent_claude, proxies }
     }
 
     fn load_file() -> FileConfig {

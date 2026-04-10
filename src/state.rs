@@ -33,6 +33,8 @@ pub struct ProxyState {
     pub rate_limit_pressure: std::sync::atomic::AtomicU64,
     /// Limits concurrent in-flight requests to Claude to avoid 429s.
     pub claude_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Round-robin pool of outbound proxy clients for Claude requests.
+    pub proxy_pool: Option<crate::proxy_pool::ProxyPool>,
     /// Tool classifier for client-agnostic tool name detection.
     /// Used by intelligence pipeline; will be passed to file_cache/memory/capture when refactored.
     #[allow(dead_code)]
@@ -74,6 +76,7 @@ impl ProxyState {
         let instance_id = load_or_create_instance_id(&config.data_dir);
         let tool_classifier = ToolClassifier::new(config.tool_mappings.as_ref());
         let max_concurrent = config.max_concurrent_claude;
+        let proxy_pool = crate::proxy_pool::ProxyPool::build(&config.proxies);
         Arc::new(Self {
             config,
             client,
@@ -87,6 +90,7 @@ impl ProxyState {
             file_cache: Mutex::new(FileCache::new(500)),
             rate_limit_pressure: std::sync::atomic::AtomicU64::new(0),
             claude_semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
+            proxy_pool,
             tool_classifier,
         })
     }
