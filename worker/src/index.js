@@ -81,7 +81,7 @@ async function getGlobalStats(kv) {
   // v2 stats use delta-based reporting; reset if missing version
   if (!raw || !raw.version) {
     return {
-      version: 2,
+      version: 3,
       total_users: 0,
       total_requests: 0,
       total_claude_turns: 0,
@@ -93,6 +93,20 @@ async function getGlobalStats(kv) {
       last_updated: null,
     };
   }
+
+  // v2 → v3 migration: fix double-counted compression savings.
+  // In v2, the proxy reported total savings (routing+compression) as "routing_savings",
+  // so total_routing_savings actually contained routing+compression combined.
+  // total_savings was then routing_report + compression = (routing+comp) + comp = double-counted.
+  // Fix: routing = old_routing - compression, total = routing + compression.
+  if (raw.version === 2) {
+    const comp = raw.total_compression_savings || 0;
+    raw.total_routing_savings = Math.max(0, (raw.total_routing_savings || 0) - comp);
+    raw.total_savings = raw.total_routing_savings + comp;
+    raw.version = 3;
+    await kv.put('global_stats', JSON.stringify(raw));
+  }
+
   return raw;
 }
 

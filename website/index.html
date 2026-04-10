@@ -609,8 +609,8 @@ a:hover { text-decoration: underline; }
     </div>
     <div style="flex:1;min-width:260px;background:var(--card);border:1px solid rgba(63,185,80,0.4);border-radius:12px;padding:24px;text-align:left">
       <h3 style="color:var(--green);margin-bottom:8px">Goose / Other Agents</h3>
-      <p style="color:var(--dim);font-size:14px;margin-bottom:12px">Start AISmush, then point any agent at the proxy. All routing, compression, and memory features apply automatically.</p>
-      <code style="font-family:var(--mono);color:var(--green);font-size:12px;line-height:1.8;display:block">aismush --daemon<br>ANTHROPIC_BASE_URL=http://localhost:1849 goose</code>
+      <p style="color:var(--dim);font-size:14px;margin-bottom:12px">Auto-detects installed agents. If both are present, it asks which to launch. All routing, compression, and memory features apply automatically.</p>
+      <code style="font-family:var(--mono);color:var(--green);font-size:13px">aismush-start --goose</code>
     </div>
   </div>
 </div>

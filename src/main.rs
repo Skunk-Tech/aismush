@@ -751,7 +751,10 @@ async fn report_stats(state: &Arc<ProxyState>) {
         let cur_requests = db_stats["total_requests"].as_i64().unwrap_or(0);
         let cur_claude = db_stats["claude_turns"].as_i64().unwrap_or(0);
         let cur_deepseek = db_stats["deepseek_turns"].as_i64().unwrap_or(0);
-        let cur_routing_savings = db_stats["savings"].as_f64().unwrap_or(0.0);
+        // db_stats["savings"] = equiv - actual = routing + compression combined.
+        // We report compression separately, so routing = total - compression.
+        let total_db_savings = db_stats["savings"].as_f64().unwrap_or(0.0);
+        let cur_routing_savings = (total_db_savings - comp_cost_saved).max(0.0);
         let cur_comp_savings = (comp_cost_saved * 10000.0).round() / 10000.0;
         let cur_comp_tokens = comp_tokens_saved;
 
