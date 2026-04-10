@@ -32,14 +32,42 @@ AISmush automatically detects what kind of work each turn requires and routes to
 
 ### AI-Powered Project Scanner (`aismush --scan`)
 - Scans your codebase, reads actual code, sends to AI for deep analysis
-- Full pipeline: Analyze → Plan → Generate per-domain → Synthesize (5-7 AI calls)
+- Full pipeline: Analyze → Plan → Generate per-domain → Synthesize → Install workflows (7 steps)
 - Generates agents deeply customized to YOUR code patterns, conventions, and architecture
 - Creates `.claude/agents/`, `.claude/skills/`, and `CLAUDE.md` — all project-specific
 - Each agent assigned the optimal model: Haiku for cheap tasks, Sonnet for complex work
 - Detects existing `.claude/` files and skips them (use `--force` to overwrite)
 - Auto-starts proxy if not running — truly one command
 - **Incremental scanning** — SHA-256 hashes every file, re-scans only what changed
+- **Auto-installs 21 production-grade engineering workflow skills** from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) (MIT licensed) alongside your project-specific agents — covering the full dev lifecycle: TDD, code review, security, debugging, planning, CI/CD, performance, and docs. Cached locally at `~/.hybrid-proxy/agent-skills/`. No extra commands needed.
 - First scan: ~$0.03. Re-scans: ~$0.003 (90% cheaper)
+
+**Scan output:**
+```
+[1/7] Reading codebase...
+[2/7] Analyzing architecture...
+[3/7] Planning agent domains...
+[4/7] Generating project agents...
+[5/7] Synthesizing CLAUDE.md...
+[6/7] Installing engineering workflows...
+[7/7] Done.
+```
+
+### Engineering Workflows
+
+The 21 skills installed by `--scan` cover every phase of the development lifecycle:
+
+| Phase | Skills |
+|-------|--------|
+| **Define** | `idea-refine`, `spec-driven-development` |
+| **Plan** | `planning-and-task-breakdown` |
+| **Build** | `incremental-implementation`, `tdd`, `api-design`, `frontend-engineering` |
+| **Verify** | `browser-testing`, `debugging` |
+| **Review** | `code-review`, `simplification`, `security`, `performance` |
+| **Ship** | `git-workflow`, `ci-cd`, `deprecation`, `documentation`, `launch` |
+| **Meta** | `context-engineering`, `using-agent-skills` |
+
+These are sourced from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) (MIT licensed), cached at `~/.hybrid-proxy/agent-skills/`, and installed into `.claude/skills/` alongside the AI-generated project-specific agents.
 
 ### Structural Summarization — 3-5x Token Reduction
 The single biggest token saver. Older tool results in your conversation get replaced with compact structural summaries — function signatures, type definitions, and imports — while your recent work stays fully intact.
@@ -365,8 +393,9 @@ All data stays on your machine:
 
 ```
 ~/.hybrid-proxy/
-├── proxy.db     ← SQLite database (requests, sessions, memories)
-└── proxy.log    ← Proxy log output
+├── proxy.db          ← SQLite database (requests, sessions, memories)
+├── proxy.log         ← Proxy log output
+└── agent-skills/     ← Cached engineering workflow skills (from addyosmani/agent-skills)
 ```
 
 ## Cost Comparison
@@ -408,6 +437,8 @@ db.rs          — SQLite persistence layer (with date filtering)
 dashboard.rs   — Live HTML dashboard with date range filtering
 state.rs       — Shared state types + provider registry
 ```
+
+The `--scan` command fetches and caches the [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) library to `~/.hybrid-proxy/agent-skills/` on first use, then installs from cache on subsequent runs.
 
 **Dependencies:** tokio, hyper, rustls, serde, rusqlite (bundled). No OpenSSL, no Node.js, no runtime dependencies.
 
