@@ -78,7 +78,7 @@ async fn main() {
         println!("  aismush --version    Show version");
         println!("  aismush --status     Check if proxy is running");
         println!("  aismush --config     Show current configuration");
-        println!("  aismush --proxy      Show proxy pool configuration and setup help");
+        println!("  aismush --proxy      Add/remove outbound proxies for Claude (saves to config)");
         println!("  aismush --setup      Interactive provider setup (DeepSeek, OpenRouter, local)");
         println!("  aismush --providers  List all configured and discovered providers");
         println!("  aismush --embeddings Start with semantic search enabled (loads 90MB model)");
@@ -128,56 +128,7 @@ async fn main() {
         return;
     }
     if args.iter().any(|a| a == "--proxy") {
-        let cfg = config::ProxyConfig::load();
-        println!("Proxy Pool — Rate Limit Defense for Claude Requests");
-        println!();
-        if cfg.proxies.is_empty() {
-            println!("  Status: not configured (direct connection to Claude)");
-        } else {
-            println!("  Status: {} proxy/proxies configured", cfg.proxies.len());
-            println!();
-            for (i, p) in cfg.proxies.iter().enumerate() {
-                // Mask password if present (host:port:user:pass)
-                let display = {
-                    let parts: Vec<&str> = p.splitn(4, ':').collect();
-                    if parts.len() == 4 && !parts[0].contains("//") {
-                        format!("{}:{}:{}:****", parts[0], parts[1], parts[2])
-                    } else {
-                        p.clone()
-                    }
-                };
-                println!("  {}. {}", i + 1, display);
-            }
-        }
-        println!();
-        println!("HOW IT WORKS");
-        println!("  Claude rate-limits by IP. With a proxy pool, each Claude request rotates");
-        println!("  through a different outbound IP — no single address absorbs the full load.");
-        println!("  If a proxy fails or returns 429, AISmush falls back to a direct connection.");
-        println!();
-        println!("CONFIGURATION");
-        println!("  Add a \"proxies\" array to ~/.hybrid-proxy/config.json:");
-        println!();
-        println!("    {{");
-        println!("      \"proxies\": [");
-        println!("        \"host:port\",");
-        println!("        \"host:port:username:password\",");
-        println!("        \"socks5://host:port\"");
-        println!("      ],");
-        println!("      \"maxConcurrentClaude\": 5");
-        println!("    }}");
-        println!();
-        println!("  Or set the AISMUSH_PROXIES env var (comma-separated):");
-        println!("    AISMUSH_PROXIES=host:port,host:port:user:pass");
-        println!();
-        println!("PROXY FORMATS");
-        println!("  host:port                  HTTP, no authentication");
-        println!("  host:port:user:pass        HTTP with Basic auth");
-        println!("  socks5://host:port         SOCKS5");
-        println!("  http://host:port           Full URL form");
-        println!();
-        println!("  Current max concurrent: {}", cfg.max_concurrent_claude);
-        println!("  Restart AISmush after config changes to apply.");
+        setup::run_proxy_setup();
         return;
     }
     if args.iter().any(|a| a == "--setup") {

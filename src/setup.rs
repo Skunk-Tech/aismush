@@ -291,6 +291,91 @@ async fn api_test(client: &HttpClient, url: &str, api_key: Option<&str>, body: &
     }
 }
 
+pub fn run_proxy_setup() {
+    println!();
+    println!("  AISmush — Proxy Pool Setup");
+    println!("  ──────────────────────────");
+    println!();
+
+    let config_path = config_path();
+    let mut config = load_existing_config(&config_path);
+
+    let mut proxies: Vec<String> = config.get("proxies")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    if proxies.is_empty() {
+        println!("  No proxies configured.");
+    } else {
+        println!("  Current proxies ({}):", proxies.len());
+        for (i, p) in proxies.iter().enumerate() {
+            println!("    {}. {}", i + 1, mask_proxy_password(p));
+        }
+    }
+    println!();
+    println!("  Supported formats:");
+    println!("    host:port                  — HTTP, no auth");
+    println!("    host:port:username:pass    — HTTP with Basic auth");
+    println!("    socks5://host:port         — SOCKS5");
+    println!();
+
+    // Add loop
+    loop {
+        let s = prompt("  Add proxy (or Enter to finish): ");
+        if s.is_empty() { break; }
+        if !s.contains(':') {
+            println!("  \x1b[31m✗ Invalid — expected at least host:port\x1b[0m");
+            continue;
+        }
+        proxies.push(s);
+        println!("  \x1b[32m✓ Added.\x1b[0m ({} total)", proxies.len());
+    }
+
+    // Remove loop
+    while !proxies.is_empty() {
+        println!();
+        println!("  Current list ({}):", proxies.len());
+        for (i, p) in proxies.iter().enumerate() {
+            println!("    {}. {}", i + 1, mask_proxy_password(p));
+        }
+        let s = prompt("  Remove by number (or Enter to skip): ");
+        if s.is_empty() { break; }
+        match s.trim().parse::<usize>() {
+            Ok(n) if n >= 1 && n <= proxies.len() => {
+                let removed = proxies.remove(n - 1);
+                println!("  \x1b[32m✓ Removed: {}\x1b[0m", mask_proxy_password(&removed));
+            }
+            _ => { println!("  \x1b[31mInvalid number.\x1b[0m"); break; }
+        }
+    }
+    println!();
+
+    // Save
+    if proxies.is_empty() {
+        if let Some(obj) = config.as_object_mut() { obj.remove("proxies"); }
+        println!("  Proxy pool disabled (no proxies configured).");
+    } else {
+        config["proxies"] = serde_json::Value::Array(
+            proxies.iter().map(|p| serde_json::Value::String(p.clone())).collect()
+        );
+        println!("  {} proxy/proxies saved.", proxies.len());
+    }
+    save_config(&config_path, &config);
+    println!("  Restart AISmush to apply changes.");
+    println!();
+}
+
+fn mask_proxy_password(proxy: &str) -> String {
+    if proxy.contains("://") { return proxy.to_string(); }
+    let parts: Vec<&str> = proxy.splitn(4, ':').collect();
+    if parts.len() == 4 {
+        format!("{}:{}:{}:****", parts[0], parts[1], parts[2])
+    } else {
+        proxy.to_string()
+    }
+}
+
 fn prompt(msg: &str) -> String {
     print!("{}", msg);
     io::stdout().flush().ok();
