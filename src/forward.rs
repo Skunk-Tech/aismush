@@ -301,6 +301,14 @@ pub async fn claude(
         }
     }
 
+    // Throttle to stay under Anthropic's TPM limit before grabbing a semaphore slot.
+    // Estimates input tokens from raw body size (chars/4). This smooths concurrent
+    // sub-agent bursts that would otherwise all arrive at Anthropic simultaneously.
+    {
+        let estimated = (body.len() as u64) / 4;
+        state.rate_governor.wait_and_record(estimated).await;
+    }
+
     // Limit concurrent in-flight requests to Claude to avoid 429s
     let permit = match state.claude_semaphore.clone().acquire_owned().await {
         Ok(permit) => permit,

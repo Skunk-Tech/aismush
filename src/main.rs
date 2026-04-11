@@ -21,6 +21,7 @@ mod provider;
 #[allow(dead_code)]
 mod router;
 mod proxy_pool;
+mod rate_governor;
 mod scan;
 mod search;
 mod setup;

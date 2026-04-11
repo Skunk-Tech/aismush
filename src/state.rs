@@ -11,6 +11,7 @@ use crate::db::Db;
 use crate::embeddings::EmbeddingEngine;
 use crate::file_cache::FileCache;
 use crate::provider::ProviderRegistry;
+use crate::rate_governor::TokenRateGovernor;
 use crate::tools::ToolClassifier;
 
 pub type HttpClient = Client<
@@ -39,6 +40,8 @@ pub struct ProxyState {
     /// Used by intelligence pipeline; will be passed to file_cache/memory/capture when refactored.
     #[allow(dead_code)]
     pub tool_classifier: ToolClassifier,
+    /// Sliding-window token-per-minute governor. Throttles requests to stay under Anthropic's TPM limit.
+    pub rate_governor: TokenRateGovernor,
 }
 
 #[derive(Default, Debug, serde::Serialize)]
@@ -76,6 +79,7 @@ impl ProxyState {
         let instance_id = load_or_create_instance_id(&config.data_dir);
         let tool_classifier = ToolClassifier::new(config.tool_mappings.as_ref());
         let max_concurrent = config.max_concurrent_claude;
+        let max_tpm = config.max_tpm;
         let proxy_pool = crate::proxy_pool::ProxyPool::build(&config.proxies);
         Arc::new(Self {
             config,
@@ -92,6 +96,7 @@ impl ProxyState {
             claude_semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
             proxy_pool,
             tool_classifier,
+            rate_governor: TokenRateGovernor::new(max_tpm),
         })
     }
 }

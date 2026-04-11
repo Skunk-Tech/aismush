@@ -25,6 +25,8 @@ pub struct ProxyConfig {
     pub max_concurrent_claude: usize,
     /// Outbound proxy strings for Claude requests (round-robined)
     pub proxies: Vec<String>,
+    /// Max input tokens per minute to send to Claude (0 = disabled). Default 40000 (Tier 1).
+    pub max_tpm: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +66,7 @@ struct FileConfig {
     tool_mappings: Option<crate::tools::ToolMappings>,
     max_concurrent_claude: Option<usize>,
     proxies: Option<Vec<String>>,
+    max_tpm: Option<u64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -172,7 +175,14 @@ impl ProxyConfig {
             .or(file_cfg.proxies)
             .unwrap_or_default();
 
-        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, local_servers, auto_discover_local, routing, tool_mappings, max_concurrent_claude, proxies }
+        // AISMUSH_MAX_TPM=40000 — max input tokens/min sent to Claude (0 = disabled)
+        let max_tpm = env::var("AISMUSH_MAX_TPM")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .or(file_cfg.max_tpm)
+            .unwrap_or(40_000);
+
+        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, local_servers, auto_discover_local, routing, tool_mappings, max_concurrent_claude, proxies, max_tpm }
     }
 
     fn load_file() -> FileConfig {
