@@ -277,7 +277,16 @@ pub async fn inject_memories(db: &Db, body: &mut Value, project_path: &str) {
         if let Some(text) = system.as_str().map(|s| s.to_string()) {
             *system = Value::String(format!("{}\n\n{}", memory_text, text));
         } else if let Some(arr) = system.as_array_mut() {
-            arr.insert(0, serde_json::json!({
+            // IMPORTANT: append AFTER existing blocks, not at position 0.
+            //
+            // Anthropic caches everything up to each cache_control marker. Inserting
+            // memory at position 0 shifts all existing blocks — invalidating the cache
+            // on every request and causing the full system prompt (~40K+ tokens) to be
+            // counted as uncached input tokens (ITPM), triggering 429s.
+            //
+            // Appending at the end keeps the cached prefix intact. Only the ~300 token
+            // memory block at the tail is uncached, costing negligible ITPM.
+            arr.push(serde_json::json!({
                 "type": "text",
                 "text": memory_text,
             }));

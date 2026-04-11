@@ -175,12 +175,15 @@ impl ProxyConfig {
             .or(file_cfg.proxies)
             .unwrap_or_default();
 
-        // AISMUSH_MAX_TPM=40000 — max input tokens/min sent to Claude (0 = disabled)
+        // AISMUSH_MAX_TPM=30000 — max input tokens/min sent to Claude (0 = disabled)
+        // Default is 30,000 to match Anthropic's Tier 1 limit for claude-sonnet-4.x.
+        // Note: only *uncached* input tokens count toward ITPM. With prompt caching
+        // working correctly, effective ITPM is much lower than raw request size suggests.
         let max_tpm = env::var("AISMUSH_MAX_TPM")
             .ok()
             .and_then(|v| v.parse().ok())
             .or(file_cfg.max_tpm)
-            .unwrap_or(40_000);
+            .unwrap_or(30_000);
 
         ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, local_servers, auto_discover_local, routing, tool_mappings, max_concurrent_claude, proxies, max_tpm }
     }

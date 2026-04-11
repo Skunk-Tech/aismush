@@ -281,21 +281,26 @@ pub async fn claude(
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
     let start = Instant::now();
 
-    // If we already know Claude is rate-limited, return 429 immediately without
-    // hitting Anthropic. This breaks the thundering-herd feedback loop where
-    // multiple instances/concurrent requests keep hammering a rate-limited key,
-    // continuously refreshing the rate-limit window and making recovery impossible.
+    // If we already know Claude is rate-limited, avoid hammering Anthropic.
+    // When DeepSeek is configured and not in direct mode, fall through so the
+    // DeepSeek fallback path below can serve the request. Otherwise return 429
+    // immediately to break the thundering-herd feedback loop.
     {
         let registry = state.registry.read().await;
         if let Some(provider) = registry.get("claude") {
             if let crate::provider::HealthState::RateLimited { until, retry_after_secs } = *provider.health.read().unwrap() {
                 if Instant::now() < until {
                     let secs_remaining = until.saturating_duration_since(Instant::now()).as_secs().max(1);
-                    warn!(secs_remaining, "Claude is rate-limited, returning 429 without hitting Anthropic");
-                    return Ok(json_resp(
-                        StatusCode::TOO_MANY_REQUESTS,
-                        &format!(r#"{{"type":"error","error":{{"type":"rate_limit_error","message":"Claude rate limit active. Retry after {} seconds."}}}}"#, retry_after_secs),
-                    ));
+                    let has_deepseek = !state.config.api_key.is_empty()
+                        && state.config.force_provider.as_deref() != Some("claude");
+                    if !has_deepseek {
+                        warn!(secs_remaining, "Claude is rate-limited, returning 429 without hitting Anthropic");
+                        return Ok(json_resp(
+                            StatusCode::TOO_MANY_REQUESTS,
+                            &format!(r#"{{"type":"error","error":{{"type":"rate_limit_error","message":"Claude rate limit active. Retry after {} seconds."}}}}"#, retry_after_secs),
+                        ));
+                    }
+                    warn!(secs_remaining, "Claude is rate-limited, routing to DeepSeek fallback");
                 }
             }
         }

@@ -53,6 +53,19 @@ impl TokenRateGovernor {
 
             let current: u64 = window.iter().map(|(_, n)| *n).sum();
 
+            // If this single request exceeds max_tpm, let it through immediately.
+            // No amount of waiting helps — the window can never have capacity for it,
+            // and spinning on an empty window produces a wait_duration of zero (busy-loop).
+            if token_count >= self.max_tpm {
+                warn!(
+                    token_count,
+                    max_tpm = self.max_tpm,
+                    "Request exceeds max_tpm; allowing through immediately to avoid spin"
+                );
+                window.push_back((now, token_count));
+                return;
+            }
+
             if current + token_count <= self.max_tpm {
                 window.push_back((now, token_count));
                 return;
