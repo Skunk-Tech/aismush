@@ -6,7 +6,7 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/Skunk-Tech/aismush/releases/download/v1.1.9/aismush-windows-x86_64.zip",
-            "hash": "87253f69ae671eff7c7ab23331bf64c8936f1acf99b8b3dfc38277cf8c20d26d"
+            "hash": "a368eacd1b0e9e877be821527e7cbd7c3eb34ec9369bf045f02fe33743a5713a"
         }
     },
     "bin": [
