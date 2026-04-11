@@ -332,6 +332,7 @@ AISmush reads config from (in priority order):
 | `AISMUSH_AUTO_DISCOVER` | `true` | Auto-discover local model servers |
 | `AISMUSH_BLAST_THRESHOLD` | `0.5` | Blast-radius score threshold for tier escalation |
 | `AISMUSH_MAX_CONCURRENT` | `5` | Max concurrent in-flight Claude requests (reduces 429 burst pressure) |
+| `AISMUSH_MAX_TPM` | `40000` | Max input tokens/min forwarded to Claude. Throttles concurrent sub-agent bursts before they hit Anthropic's rate limit. Set `0` to disable. |
 | `AISMUSH_PROXIES` | (none) | Comma-separated outbound proxy list for Claude requests (see [Proxy Pool](#proxy-pool)) |
 | `ANTHROPIC_BASE_URL` | (none) | Set to `http://localhost:1849` to route any Anthropic client through AISmush |
 | `ANTHROPIC_HOST` | (none) | Goose-specific equivalent of `ANTHROPIC_BASE_URL` — set to `http://localhost:1849` |
@@ -361,6 +362,7 @@ AISmush reads config from (in priority order):
   "verbose": false,
   "forceProvider": null,
   "maxConcurrentClaude": 5,
+  "maxTpm": 40000,
   "proxies": [
     "proxy1.host:8080",
     "proxy2.host:8080:username:password",
@@ -402,7 +404,7 @@ AISMUSH_PROXIES=proxy1.host:8080,proxy2.host:8080:user:pass,socks5://proxy3.host
 }
 ```
 
-If a proxy attempt returns a 429 or connection error, AISmush automatically falls back to a direct Claude connection. Set `AISMUSH_MAX_CONCURRENT` (default `5`) to further throttle burst concurrency and reduce rate-limit pressure at the source.
+If a proxy attempt returns a 429 or connection error, AISmush automatically falls back to a direct Claude connection. Set `AISMUSH_MAX_CONCURRENT` (default `5`) to throttle burst concurrency, and `AISMUSH_MAX_TPM` (default `40000`) to proactively smooth token-per-minute usage before it reaches Anthropic's limit.
 
 ### Claude Authentication
 
@@ -490,7 +492,7 @@ A: No. It sends requests to localhost instead of api.anthropic.com, but the API 
 A: DeepSeek 500/502 errors return immediately with a clear message. Set `FORCE_PROVIDER=claude` to bypass.
 
 **Q: What if Claude is down or rate-limited?**
-A: AISmush has two layers of 429 defense. First, `AISMUSH_MAX_CONCURRENT` (default 5) throttles burst concurrency so you don't overload Claude's rate limits in the first place. Second, if Claude still returns a 429, the proxy automatically falls back to DeepSeek — it trims context to fit DeepSeek's window and sends the request there. Your work is never blocked. Both providers have to be unreachable simultaneously for a request to fail.
+A: AISmush has three layers of 429 defense. First, `AISMUSH_MAX_TPM` (default 40,000) proactively throttles token-per-minute throughput using a sliding window — concurrent sub-agents are spaced out before they ever hit Anthropic's limit. Second, `AISMUSH_MAX_CONCURRENT` (default 5) caps simultaneous in-flight connections. Third, if Claude still returns a 429, the proxy automatically falls back to DeepSeek — context is trimmed to fit and the request goes through. Your work is never blocked. Both providers have to be unreachable simultaneously for a request to fail.
 
 **Q: I'm running a shared server and everyone keeps hitting 429s from Claude.**
 A: Claude rate-limits by IP address. When a team shares one AISmush instance, all requests come from the same IP. Configure a proxy pool with `AISMUSH_PROXIES=proxy1:8080,proxy2:8080:user:pass` (or the `proxies` array in your config). AISmush round-robins each Claude request across the pool, distributing traffic across multiple IPs so no single address hits the rate limit. See [Proxy Pool](#proxy-pool) for full format details.
