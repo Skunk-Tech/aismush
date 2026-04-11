@@ -65,19 +65,6 @@ a:hover { text-decoration: underline; }
 .announcement .demo-flow .ai { color: var(--green); }
 .announcement .demo-flow .agent { color: var(--yellow); font-weight: 700; }
 
-/* Live counter */
-.live-counter {
-  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-  max-width: 700px; margin: 0 auto 60px; padding: 24px 32px;
-}
-.live-counter h2 { color: var(--green); font-size: 12px; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 16px; text-align: center; font-family: var(--mono); }
-.counter-row { display: flex; justify-content: center; gap: 32px; flex-wrap: wrap; }
-.counter-item { text-align: center; }
-.counter-item .number { font-size: 32px; font-weight: 800; color: #fff; font-family: var(--mono); }
-.counter-item .label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
-.counter-item .number.green { color: var(--green); }
-.pulse { animation: pulse 2s ease-in-out infinite; }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
 
 /* Problem/Solution */
 .problem {
@@ -264,41 +251,6 @@ a:hover { text-decoration: underline; }
     </div>
   </div>
   <p style="color:var(--dim);font-size:13px;margin-top:20px;position:relative">Set <code style="color:var(--green);background:rgba(0,0,0,0.3);padding:1px 6px;border-radius:4px;font-size:12px">AISMUSH_PROXIES=host:port,host:port:user:pass</code> or add a <code style="color:var(--green);background:rgba(0,0,0,0.3);padding:1px 6px;border-radius:4px;font-size:12px">"proxies"</code> array to your config. <a href="https://github.com/Skunk-Tech/aismush#proxy-pool" style="color:var(--blue)">Full docs &rarr;</a></p>
-</div>
-</div>
-
-<!-- LIVE COUNTER -->
-<div class="container">
-<div class="live-counter">
-  <h2 class="pulse">Community Savings — Live</h2>
-  <div class="counter-row">
-    <div class="counter-item">
-      <div class="number green" id="savings">$0.00</div>
-      <div class="label">Total Saved</div>
-    </div>
-    <div class="counter-item">
-      <div class="number" id="routing-savings" style="color:var(--purple)">$0.00</div>
-      <div class="label">Routing Savings</div>
-    </div>
-    <div class="counter-item">
-      <div class="number" id="comp-savings" style="color:var(--yellow)">$0.00</div>
-      <div class="label">Compression Savings</div>
-    </div>
-  </div>
-  <div class="counter-row" style="margin-top:12px">
-    <div class="counter-item">
-      <div class="number" id="requests">0</div>
-      <div class="label">Requests</div>
-    </div>
-    <div class="counter-item">
-      <div class="number" id="tokens-saved" style="color:var(--green)">0</div>
-      <div class="label">Tokens Compressed</div>
-    </div>
-    <div class="counter-item">
-      <div class="number" id="users">0</div>
-      <div class="label">Users</div>
-    </div>
-  </div>
 </div>
 </div>
 
@@ -682,30 +634,11 @@ a:hover { text-decoration: underline; }
 </div>
 
 <script>
-function fmtDollars(n) { return '$' + (n || 0).toFixed(2); }
-function fmtNum(n) { return n > 1e6 ? (n/1e6).toFixed(1)+'M' : n > 1e3 ? (n/1e3).toFixed(1)+'K' : (n||0).toLocaleString(); }
-
-async function loadStats() {
-  try {
-    const r = await fetch('https://aismush.us.com/api/stats');
-    const s = await r.json();
-    document.getElementById('savings').textContent = fmtDollars(s.total_savings);
-    document.getElementById('routing-savings').textContent = fmtDollars(s.total_routing_savings);
-    document.getElementById('comp-savings').textContent = fmtDollars(s.total_compression_savings);
-    document.getElementById('requests').textContent = fmtNum(s.total_requests);
-    document.getElementById('tokens-saved').textContent = fmtNum(s.total_compressed_tokens);
-    document.getElementById('users').textContent = (s.total_users || 0).toLocaleString();
-  } catch(e) {}
-}
-
 function copyInstall(el) {
   navigator.clipboard.writeText(el.textContent.trim());
   el.classList.add('copied');
   setTimeout(() => el.classList.remove('copied'), 2000);
 }
-
-loadStats();
-setInterval(loadStats, 30000);
 </script>
 </body>
 </html>
