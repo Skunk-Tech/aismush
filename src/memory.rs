@@ -445,6 +445,138 @@ pub async fn decay_and_prune(db: &Db) {
     }).await.ok();
 }
 
+/// Return the tiered memory context as plain text (for the SessionStart hook).
+/// Same logic as inject_memories but returns a String instead of modifying a request body.
+pub async fn get_context_text(db: &Db, project_path: &str) -> String {
+    const MAX_CHARS: usize = 1200;
+
+    let critical = fetch_critical_memories(db, project_path).await;
+    let recent = get_recent_turns(db, project_path).await;
+
+    if critical.is_empty() && recent.is_empty() {
+        return String::new();
+    }
+
+    let mut text = format!("[Memory context — {}]\n", project_path);
+
+    for (content, memory_type) in &critical {
+        let line = format!("- [{}] {}\n", memory_type, content);
+        if text.len() + line.len() > MAX_CHARS { break; }
+        text.push_str(&line);
+    }
+
+    if !recent.is_empty() && text.len() < MAX_CHARS - 200 {
+        text.push_str("\n[Recent work:]\n");
+        for (user_msg, asst_snippet, _tools, age) in &recent {
+            let msg = if !user_msg.is_empty() { user_msg.as_str() } else { asst_snippet.as_str() };
+            let line = format!("  [{}] {}\n", age, msg);
+            if text.len() + line.len() > MAX_CHARS { break; }
+            text.push_str(&line);
+        }
+    }
+
+    text
+}
+
+/// Summarize the most recent session for a project via AI and persist it.
+/// Called from POST /memory/summarize (wired to the Stop hook).
+pub async fn summarize_session(db: &Db, project_path: &str, proxy_port: u16, api_key: &str) -> Result<(), String> {
+    let turns = get_turns_for_summary(db, project_path).await;
+    if turns.is_empty() {
+        return Ok(());
+    }
+
+    let mut context = String::new();
+    for (user, asst, tools, age) in &turns {
+        if !user.is_empty() {
+            let mut end = user.len().min(200);
+            while end > 0 && !user.is_char_boundary(end) { end -= 1; }
+            context.push_str(&format!("[{}] User: {}\n", age, &user[..end]));
+        }
+        if !tools.is_empty() {
+            context.push_str(&format!("  Tools: {}\n", tools));
+        }
+        if !asst.is_empty() {
+            let mut end = asst.len().min(300);
+            while end > 0 && !asst.is_char_boundary(end) { end -= 1; }
+            context.push_str(&format!("  Assistant: {}\n\n", &asst[..end]));
+        }
+    }
+
+    let prompt = format!(
+        "Summarize this development session in 3-5 concise bullet points covering: \
+         what was worked on, key decisions made, problems solved, and anything left incomplete.\n\n{}",
+        context
+    );
+
+    // Use DeepSeek if key available (cheaper); fall back to Claude Haiku.
+    let use_claude = api_key.is_empty();
+    let summary = crate::scan::call_ai(&prompt, proxy_port, api_key, use_claude).await?;
+
+    let db = db.clone();
+    let project = project_path.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.blocking_lock();
+        conn.execute(
+            "UPDATE conversations SET summary = ?1, ended_at = strftime('%s','now')
+             WHERE id = (
+                 SELECT id FROM conversations WHERE project_path = ?2
+                 ORDER BY started_at DESC LIMIT 1
+             )",
+            params![summary, project],
+        ).ok();
+    }).await.ok();
+
+    info!(project = project_path, "Session summary stored");
+    Ok(())
+}
+
+/// Fetch the last 24 hours of turns for a project, ordered oldest-first (for summarization).
+async fn get_turns_for_summary(db: &Db, project_path: &str) -> Vec<(String, String, String, String)> {
+    let db = db.clone();
+    let project = project_path.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.blocking_lock();
+        let mut stmt = conn.prepare(
+            "SELECT t.user_message, t.assistant_message, t.timestamp,
+                    GROUP_CONCAT(ti.tool_name, ', ') as tools
+             FROM turns t
+             JOIN conversations c ON t.conversation_id = c.id
+             LEFT JOIN tool_invocations ti ON ti.turn_id = t.id
+             WHERE c.project_path = ?1
+               AND t.timestamp > strftime('%s','now') - 86400
+               AND t.user_message IS NOT NULL
+               AND t.user_message != ''
+             GROUP BY t.id
+             ORDER BY t.timestamp ASC
+             LIMIT 20"
+        ).ok()?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64).unwrap_or(0);
+
+        let rows = stmt.query_map(rusqlite::params![project], |row| {
+            let user: String = row.get(0)?;
+            let asst: String = row.get::<_, Option<String>>(1)?.unwrap_or_default();
+            let ts: i64 = row.get(2)?;
+            let tools: String = row.get::<_, Option<String>>(3)?.unwrap_or_default();
+            let diff = now - ts;
+            let age = if diff < 3600 { format!("{}m ago", diff / 60) }
+                else if diff < 86400 { format!("{}h ago", diff / 3600) }
+                else { format!("{}d ago", diff / 86400) };
+            let snippet = if asst.len() > 300 {
+                let mut end = 300;
+                while end > 0 && !asst.is_char_boundary(end) { end -= 1; }
+                format!("{}...", &asst[..end])
+            } else { asst };
+            Ok((user, snippet, tools, age))
+        }).ok()?;
+
+        Some(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+    }).await.ok().flatten().unwrap_or_default()
+}
+
 /// Detect project path from system prompt.
 pub fn detect_project(body: &Value) -> String {
     if let Some(system) = body.get("system") {

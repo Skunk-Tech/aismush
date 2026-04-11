@@ -462,6 +462,22 @@ async fn handle(
             }
             return Ok(json_resp(StatusCode::OK, "[]"));
         }
+        if path.starts_with("/memory/context") {
+            if let Some(ref database) = state.db {
+                let project = path.split("project=").nth(1)
+                    .and_then(|p| p.split('&').next())
+                    .map(|p| urlencoding_decode(p))
+                    .unwrap_or_else(|| "default".to_string());
+                let text = memory::get_context_text(database, &project).await;
+                return Ok(Response::builder()
+                    .status(200)
+                    .header("content-type", "text/plain")
+                    .header("access-control-allow-origin", "*")
+                    .body(full(Bytes::from(text)))
+                    .unwrap());
+            }
+            return Ok(Response::builder().status(200).header("content-type", "text/plain").body(full(Bytes::new())).unwrap());
+        }
     }
     if method == hyper::Method::POST && path == "/stats/reset" {
         if let Some(ref database) = state.db {
@@ -478,6 +494,23 @@ async fn handle(
         if let Some(ref database) = state.db {
             db::clear_memories(database).await;
             return Ok(json_resp(StatusCode::OK, r#"{"ok":true}"#));
+        }
+        return Ok(json_resp(StatusCode::OK, r#"{"ok":true}"#));
+    }
+    if method == hyper::Method::POST && path.starts_with("/memory/summarize") {
+        if let Some(ref database) = state.db {
+            let project = path.split("project=").nth(1)
+                .and_then(|p| p.split('&').next())
+                .map(|p| urlencoding_decode(p))
+                .unwrap_or_else(|| "default".to_string());
+            let db = database.clone();
+            let port = state.config.port;
+            let api_key = state.config.api_key.clone();
+            tokio::spawn(async move {
+                if let Err(e) = memory::summarize_session(&db, &project, port, &api_key).await {
+                    tracing::warn!(error = %e, project = %project, "Session summarization failed");
+                }
+            });
         }
         return Ok(json_resp(StatusCode::OK, r#"{"ok":true}"#));
     }
