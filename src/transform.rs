@@ -67,10 +67,13 @@ pub fn anthropic_to_openai(body: &Value, model: &str) -> Value {
     // Copy tools if present (convert Anthropic tool format to OpenAI)
     if let Some(tools) = body.get("tools").and_then(|t| t.as_array()) {
         let openai_tools: Vec<Value> = tools.iter().map(|tool| {
+            let name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            // OpenAI enforces a 64-character limit on function names
+            let name = if name.len() > 64 { &name[..64] } else { name };
             json!({
                 "type": "function",
                 "function": {
-                    "name": tool.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                    "name": name,
                     "description": tool.get("description").and_then(|d| d.as_str()).unwrap_or(""),
                     "parameters": tool.get("input_schema").cloned().unwrap_or(json!({})),
                 }

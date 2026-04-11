@@ -185,6 +185,10 @@ async fn send_direct_claude(
             }
             Err(e) => {
                 warn!(error = %e, "Claude direct connection failed");
+                if state.config.force_provider.as_deref() == Some("claude") {
+                    return Ok((StatusCode::BAD_GATEWAY, err_headers(),
+                        StreamSource::Hyper(full(format!(r#"{{"error":"Claude connection failed: {}"}}"#, e)))));
+                }
                 match deepseek_fallback(state, body, path).await {
                     Ok(triple) => Ok(triple),
                     Err(msg) => Ok((StatusCode::BAD_GATEWAY, err_headers(), StreamSource::Hyper(full(msg)))),
@@ -221,6 +225,14 @@ async fn deepseek_fallback(
     if let serde_json::Value::Object(ref mut m) = ds_body {
         m.remove("thinking");
         m.remove("budget_tokens");
+    }
+    // DeepSeek's Anthropic-compatible endpoint enforces a 64-char limit on tool names
+    if let Some(tools) = ds_body.get_mut("tools").and_then(|t| t.as_array_mut()) {
+        for tool in tools.iter_mut() {
+            if let Some(name) = tool.get_mut("name").and_then(|n| n.as_str().map(|s| s.to_string())) {
+                if name.len() > 64 { tool["name"] = serde_json::Value::String(name[..64].to_string()); }
+            }
+        }
     }
     crate::context::ensure_fits(&mut ds_body, "deepseek");
     let ds_path = path.replace("/v1/", "/").replace("/v1", "/");
@@ -268,6 +280,26 @@ pub async fn claude(
     state: &Arc<ProxyState>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
     let start = Instant::now();
+
+    // If we already know Claude is rate-limited, return 429 immediately without
+    // hitting Anthropic. This breaks the thundering-herd feedback loop where
+    // multiple instances/concurrent requests keep hammering a rate-limited key,
+    // continuously refreshing the rate-limit window and making recovery impossible.
+    {
+        let registry = state.registry.read().await;
+        if let Some(provider) = registry.get("claude") {
+            if let crate::provider::HealthState::RateLimited { until, retry_after_secs } = *provider.health.read().unwrap() {
+                if Instant::now() < until {
+                    let secs_remaining = until.saturating_duration_since(Instant::now()).as_secs().max(1);
+                    warn!(secs_remaining, "Claude is rate-limited, returning 429 without hitting Anthropic");
+                    return Ok(json_resp(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        &format!(r#"{{"type":"error","error":{{"type":"rate_limit_error","message":"Claude rate limit active. Retry after {} seconds."}}}}"#, retry_after_secs),
+                    ));
+                }
+            }
+        }
+    }
 
     // Limit concurrent in-flight requests to Claude to avoid 429s
     let permit = match state.claude_semaphore.clone().acquire_owned().await {
@@ -357,7 +389,11 @@ pub async fn claude(
     };
 
     // ── DeepSeek fallback on 429 ────────────────────────────────────────
-    let resp = if resp.status == StatusCode::TOO_MANY_REQUESTS && !state.config.api_key.is_empty() {
+    // Skip if --direct: user explicitly wants Claude only, never fall back
+    let resp = if resp.status == StatusCode::TOO_MANY_REQUESTS
+        && !state.config.api_key.is_empty()
+        && state.config.force_provider.as_deref() != Some("claude")
+    {
         warn!("Claude still 429, falling back to DeepSeek");
 
         let mut ds_body: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
@@ -366,6 +402,14 @@ pub async fn claude(
         if let serde_json::Value::Object(ref mut m) = ds_body {
             m.remove("thinking");
             m.remove("budget_tokens");
+        }
+        // DeepSeek's Anthropic-compatible endpoint enforces a 64-char limit on tool names
+        if let Some(tools) = ds_body.get_mut("tools").and_then(|t| t.as_array_mut()) {
+            for tool in tools.iter_mut() {
+                if let Some(name) = tool.get_mut("name").and_then(|n| n.as_str().map(|s| s.to_string())) {
+                    if name.len() > 64 { tool["name"] = serde_json::Value::String(name[..64].to_string()); }
+                }
+            }
         }
         crate::context::ensure_fits(&mut ds_body, "deepseek");
 
@@ -399,6 +443,25 @@ pub async fn claude(
     } else {
         resp
     };
+
+    // If still 429 after all fallback logic (e.g. --direct mode), release the semaphore
+    // immediately and return without recording token usage — the request never processed.
+    if resp.status == StatusCode::TOO_MANY_REQUESTS {
+        drop(permit);
+        let retry_after = resp.headers.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("retry-after"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("60");
+        return Ok(Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .header("content-type", "application/json")
+            .header("retry-after", retry_after)
+            .body(full(format!(
+                r#"{{"type":"error","error":{{"type":"rate_limit_error","message":"Claude rate limit. Retry after {} seconds."}}}}"#,
+                retry_after
+            )))
+            .unwrap());
+    }
 
     {
             let needs_openai_conversion = client_format == InboundFormat::OpenAI;
