@@ -53,17 +53,39 @@ impl TokenRateGovernor {
 
             let current: u64 = window.iter().map(|(_, n)| *n).sum();
 
-            // If this single request exceeds max_tpm, let it through immediately.
-            // No amount of waiting helps — the window can never have capacity for it,
-            // and spinning on an empty window produces a wait_duration of zero (busy-loop).
+            // If this single request exceeds max_tpm it can never fit within a clean window.
+            // We must still pace it: if the window is empty, let it through immediately
+            // (no point waiting — there's nothing to drain). If the window has tokens,
+            // wait for the OLDEST entry to expire before re-evaluating. This paces
+            // back-to-back oversized requests at ~1/minute and prevents the thundering-herd
+            // of large context sessions that caused the 3-hour 429 penalty.
             if token_count >= self.max_tpm {
+                if current == 0 {
+                    warn!(
+                        token_count,
+                        max_tpm = self.max_tpm,
+                        "Request exceeds max_tpm; window empty, allowing through"
+                    );
+                    window.push_back((now, token_count));
+                    return;
+                }
+                // Window has tokens — wait for the oldest to expire, then re-evaluate.
+                let wait_until = window.front()
+                    .map(|(t, _)| *t + Duration::from_secs(60) + Duration::from_millis(100))
+                    .unwrap_or(now);
+                let wait_duration = wait_until.saturating_duration_since(now);
+                drop(window);
                 warn!(
                     token_count,
                     max_tpm = self.max_tpm,
-                    "Request exceeds max_tpm; allowing through immediately to avoid spin"
+                    current_tpm = current,
+                    wait_ms = wait_duration.as_millis(),
+                    "Request exceeds max_tpm; pacing — waiting for window to drain"
                 );
-                window.push_back((now, token_count));
-                return;
+                if !wait_duration.is_zero() {
+                    tokio::time::sleep(wait_duration).await;
+                }
+                continue;
             }
 
             if current + token_count <= self.max_tpm {

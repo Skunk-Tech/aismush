@@ -560,16 +560,21 @@ pub async fn claude(
                 }
 
                 if let Some(ref db) = state2.db {
-                    let comp_savings = if comp_tokens_saved > 0 {
-                        let (input_price, _) = crate::cost::get_pricing("claude", &model);
-                        comp_tokens_saved as f64 * input_price / 1_000_000.0
-                    } else { 0.0 };
+                    let (input_price, _) = crate::cost::get_pricing("claude", &model);
+                    // When prompt caching is active, the compressed-away tokens were old-context
+                    // cache-read tokens priced at 10% of input rate. When cache is inactive
+                    // (e.g. routed through proxy pool), they're full input tokens.
+                    let effective_comp_price = if usage.cache_read_tokens > 0 { input_price * 0.1 } else { input_price };
+                    let comp_savings = comp_tokens_saved as f64 * effective_comp_price / 1_000_000.0;
+                    // claude_equiv_cost must use the same effective price so that
+                    // routingSaved = totalSaved - compCostSaved stays at zero for pure Claude sessions.
+                    let claude_equiv_cost = costs.actual_cost + comp_savings;
                     db::log_request(
                         db, "claude", &model, &reason,
                         input_tokens, output_tokens,
                         usage.cache_read_tokens, usage.cache_write_tokens,
                         total_bytes, latency,
-                        costs.actual_cost, costs.claude_equiv_cost,
+                        costs.actual_cost, claude_equiv_cost,
                         comp_original, comp_final, comp_savings,
                     ).await;
 
@@ -767,7 +772,9 @@ pub async fn deepseek(
 
                 if let Some(ref db) = state2.db {
                     let comp_savings = if comp_tokens_saved > 0 {
-                        let (input_price, _) = crate::cost::get_pricing("claude", "claude-sonnet-4-20250514");
+                        // Price at DeepSeek's actual input rate. The routing delta vs Claude
+                        // is already captured in claude_equiv_cost, so routingSaved stays correct.
+                        let (input_price, _) = crate::cost::get_pricing("deepseek", "deepseek-chat");
                         comp_tokens_saved as f64 * input_price / 1_000_000.0
                     } else { 0.0 };
                     db::log_request(
@@ -1033,7 +1040,9 @@ pub async fn openai_compat(
                 if let Some(ref db) = state2.db {
                     let comp_savings = if comp_original > comp_final {
                         let tokens_saved = (comp_original - comp_final) / 3;
-                        let (input_price, _) = crate::cost::get_pricing("claude", "claude-sonnet-4-20250514");
+                        // Use actual provider pricing so comp_savings + routingSaved = totalSaved correctly.
+                        // Local providers return (0.0, 0.0) so comp_savings is $0 — all savings attributed to routing.
+                        let (input_price, _) = crate::cost::get_pricing(&provider_id, &model);
                         tokens_saved as f64 * input_price / 1_000_000.0
                     } else { 0.0 };
                     db::log_request(
