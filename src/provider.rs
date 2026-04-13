@@ -377,6 +377,8 @@ pub struct ProviderStatus {
 pub fn build_registry(
     deepseek_api_key: &str,
     openrouter_api_key: &str,
+    glm_api_key: &str,
+    glm_coding: bool,
     local_servers: &[(String, String, String)], // (name, url, model)
 ) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
@@ -410,6 +412,22 @@ pub fn build_registry(
                 .with_pricing(0.27, 1.10)
                 .with_context_window(64_000)
                 .with_max_output(16384)
+        );
+    }
+
+    // GLM (Zhipu AI) if key is configured
+    if !glm_api_key.is_empty() {
+        let (base_url, model) = if glm_coding {
+            ("https://api.z.ai/api/coding/paas/v4", "codegeex-4")
+        } else {
+            ("https://api.z.ai/api/paas/v4", "glm-4-plus")
+        };
+        registry.register(
+            ProviderConfig::new("glm", ProviderKind::OpenAICompat, base_url, Some(glm_api_key.to_string()), model)
+                .with_tier(Tier::Mid)
+                .with_pricing(0.14, 0.14) // glm-4-plus pricing (¥1/M tokens ≈ $0.14/M)
+                .with_context_window(128_000)
+                .with_max_output(4096)
         );
     }
 
@@ -450,7 +468,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_cheapest() {
-        let registry = build_registry("sk-test", "", &[]);
+        let registry = build_registry("sk-test", "", "", false, &[]);
         // Should find DeepSeek as cheapest at Mid tier
         let cheapest = registry.cheapest_healthy(Tier::Mid, 0, false).await;
         assert!(cheapest.is_some());
@@ -459,7 +477,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_premium_gets_claude() {
-        let registry = build_registry("sk-test", "", &[]);
+        let registry = build_registry("sk-test", "", "", false, &[]);
         let cheapest = registry.cheapest_healthy(Tier::Premium, 0, false).await;
         assert!(cheapest.is_some());
         assert_eq!(cheapest.unwrap().id, "claude");
@@ -467,7 +485,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fallback_chain() {
-        let registry = build_registry("sk-test", "", &[]);
+        let registry = build_registry("sk-test", "", "", false, &[]);
         let chain = registry.fallback_chain("deepseek", 0, false).await;
         assert!(!chain.is_empty());
         assert_eq!(chain[0].id, "claude"); // Claude is the fallback

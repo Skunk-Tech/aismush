@@ -13,6 +13,10 @@ pub struct ProxyConfig {
     pub db_path: PathBuf,
     /// OpenRouter API key for access to 290+ models
     pub openrouter_api_key: String,
+    /// GLM (Zhipu AI) API key
+    pub glm_api_key: String,
+    /// Use GLM Coding Plan endpoint instead of the general endpoint
+    pub glm_coding: bool,
     /// Explicitly configured local model servers: (name, url, model)
     pub local_servers: Vec<(String, String, String)>,
     /// Auto-discover local model servers on known ports
@@ -60,6 +64,8 @@ struct FileConfig {
     verbose: Option<bool>,
     force_provider: Option<String>,
     openrouter_key: Option<String>,
+    glm_key: Option<String>,
+    glm_coding_plan: Option<bool>,
     local: Option<Vec<LocalServerFileConfig>>,
     auto_discover_local: Option<bool>,
     routing: Option<RoutingFileConfig>,
@@ -120,6 +126,17 @@ impl ProxyConfig {
             .ok()
             .or(file_cfg.openrouter_key)
             .unwrap_or_default();
+
+        let glm_api_key = env::var("GLM_API_KEY")
+            .ok()
+            .or(file_cfg.glm_key)
+            .unwrap_or_default();
+
+        let glm_coding = env::var("GLM_CODING_PLAN")
+            .ok()
+            .map(|v| v == "true" || v == "1")
+            .or(file_cfg.glm_coding_plan)
+            .unwrap_or(false);
 
         let mut local_servers: Vec<(String, String, String)> = Vec::new();
 
@@ -185,7 +202,7 @@ impl ProxyConfig {
             .or(file_cfg.max_tpm)
             .unwrap_or(30_000);
 
-        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, local_servers, auto_discover_local, routing, tool_mappings, max_concurrent_claude, proxies, max_tpm }
+        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, glm_api_key, glm_coding, local_servers, auto_discover_local, routing, tool_mappings, max_concurrent_claude, proxies, max_tpm }
     }
 
     fn load_file() -> FileConfig {

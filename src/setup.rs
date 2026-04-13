@@ -81,8 +81,41 @@ pub async fn run_setup(client: &HttpClient) {
     }
     println!();
 
+    // ── GLM (Zhipu AI) ────────────────────────────────────────────────
+    println!("  \x1b[1m3. GLM\x1b[0m (Zhipu AI — glm-4-plus / codegeex-4)");
+    let existing_glm = config.get("glmKey").and_then(|k| k.as_str()).unwrap_or("").to_string();
+    if !existing_glm.is_empty() {
+        println!("     Current key: {}...", &existing_glm[..8.min(existing_glm.len())]);
+        let keep = prompt("     Keep existing key? [Y/n]: ");
+        if keep.to_lowercase() != "n" {
+            let coding = config.get("glmCodingPlan").and_then(|v| v.as_bool()).unwrap_or(false);
+            println!("     \x1b[32mKept.\x1b[0m Testing connection ({})...",
+                if coding { "Coding endpoint" } else { "General endpoint" });
+            test_glm(client, &existing_glm, coding).await;
+        } else {
+            setup_glm(client, &mut config).await;
+        }
+    } else {
+        println!("     No key configured.");
+        println!("     Get a key at: https://bigmodel.cn/usercenter/apikeys");
+        let key = prompt("     Paste your GLM API key (or Enter to skip): ");
+        if !key.is_empty() {
+            let coding_ans = prompt("     Do you have a GLM Coding Plan? [y/N]: ");
+            let coding = coding_ans.to_lowercase() == "y";
+            println!("     Testing connection ({})...",
+                if coding { "Coding endpoint" } else { "General endpoint" });
+            if test_glm(client, &key, coding).await {
+                config["glmKey"] = Value::String(key);
+                config["glmCodingPlan"] = Value::Bool(coding);
+            }
+        } else {
+            println!("     \x1b[33mSkipped.\x1b[0m");
+        }
+    }
+    println!();
+
     // ── Local Models ──────────────────────────────────────────────────
-    println!("  \x1b[1m3. Local Models\x1b[0m (free — zero API costs)");
+    println!("  \x1b[1m4. Local Models\x1b[0m (free — zero API costs)");
     println!("     Scanning for local model servers...");
     let discovered = discovery::discover_local_servers(client).await;
     if discovered.is_empty() {
@@ -116,17 +149,23 @@ pub async fn run_setup(client: &HttpClient) {
     println!("  ─────────────");
     let has_ds = config.get("apiKey").and_then(|k| k.as_str()).map_or(false, |k| !k.is_empty());
     let has_or = config.get("openrouterKey").and_then(|k| k.as_str()).map_or(false, |k| !k.is_empty());
+    let has_glm = config.get("glmKey").and_then(|k| k.as_str()).map_or(false, |k| !k.is_empty());
+    let glm_coding = config.get("glmCodingPlan").and_then(|v| v.as_bool()).unwrap_or(false);
     let has_local = !discovered.is_empty();
 
     if has_ds { println!("  \x1b[32m✓\x1b[0m DeepSeek — smart routing enabled"); }
     else { println!("  \x1b[33m-\x1b[0m DeepSeek — not configured"); }
     if has_or { println!("  \x1b[32m✓\x1b[0m OpenRouter — 290+ models available"); }
     else { println!("  \x1b[33m-\x1b[0m OpenRouter — not configured"); }
+    if has_glm {
+        let plan = if glm_coding { "Coding endpoint" } else { "General endpoint" };
+        println!("  \x1b[32m✓\x1b[0m GLM — {} active", plan);
+    } else { println!("  \x1b[33m-\x1b[0m GLM — not configured"); }
     if has_local { println!("  \x1b[32m✓\x1b[0m Local models — free tier active"); }
     else { println!("  \x1b[33m-\x1b[0m Local models — none detected"); }
 
     println!();
-    if has_ds || has_or || has_local {
+    if has_ds || has_or || has_glm || has_local {
         println!("  Run \x1b[1maismush-start\x1b[0m to begin coding with smart routing.");
     } else {
         println!("  Run \x1b[1maismush-start --direct\x1b[0m for Claude-only mode.");
@@ -165,6 +204,62 @@ async fn setup_openrouter(client: &HttpClient, config: &mut Value) {
         let save = prompt("     Save anyway? [y/N]: ");
         if save.to_lowercase() == "y" {
             config["openrouterKey"] = Value::String(key);
+        }
+    }
+}
+
+async fn setup_glm(client: &HttpClient, config: &mut Value) {
+    let key = prompt("     Paste your GLM API key: ");
+    if key.is_empty() {
+        println!("     \x1b[33mSkipped.\x1b[0m");
+        return;
+    }
+    let coding_ans = prompt("     Do you have a GLM Coding Plan? [y/N]: ");
+    let coding = coding_ans.to_lowercase() == "y";
+    println!("     Testing connection ({})...",
+        if coding { "Coding endpoint" } else { "General endpoint" });
+    if test_glm(client, &key, coding).await {
+        config["glmKey"] = Value::String(key);
+        config["glmCodingPlan"] = Value::Bool(coding);
+    } else {
+        let save = prompt("     Save anyway? [y/N]: ");
+        if save.to_lowercase() == "y" {
+            config["glmKey"] = Value::String(key);
+            config["glmCodingPlan"] = Value::Bool(coding);
+        }
+    }
+}
+
+/// Test GLM API key with a minimal completion.
+async fn test_glm(client: &HttpClient, key: &str, coding: bool) -> bool {
+    let (base_url, model) = if coding {
+        ("https://api.z.ai/api/coding/paas/v4/chat/completions", "codegeex-4")
+    } else {
+        ("https://api.z.ai/api/paas/v4/chat/completions", "glm-4-plus")
+    };
+    let body = json!({
+        "model": model,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    match api_test(client, base_url, Some(key), &body).await {
+        Ok(status) => {
+            if status == 200 || status == 429 {
+                println!("     \x1b[32m✓ GLM key is valid!\x1b[0m");
+                true
+            } else if status == 401 || status == 403 {
+                println!("     \x1b[31m✗ Invalid key (HTTP {})\x1b[0m", status);
+                println!("       Check your key at https://bigmodel.cn/usercenter/apikeys");
+                false
+            } else {
+                println!("     \x1b[33m? Unexpected response (HTTP {})\x1b[0m", status);
+                false
+            }
+        }
+        Err(e) => {
+            println!("     \x1b[31m✗ Connection failed: {}\x1b[0m", e);
+            false
         }
     }
 }

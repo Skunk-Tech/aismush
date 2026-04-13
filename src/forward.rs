@@ -864,11 +864,19 @@ pub async fn openai_compat(
     let openai_body = transform::anthropic_to_openai(&body, target_model);
     let body_bytes = serde_json::to_vec(&openai_body).unwrap_or_default();
 
-    // Build the URL — ensure we hit /v1/chat/completions
-    let url = if base_url.contains("/v1") {
-        format!("{}/chat/completions", base_url.trim_end_matches('/'))
-    } else {
-        format!("{}/v1/chat/completions", base_url.trim_end_matches('/'))
+    // Build the URL — ensure we hit /chat/completions.
+    // If the base_url already ends with a version segment (/v1, /v2, /v4 etc.)
+    // just append /chat/completions; otherwise add the standard /v1/chat/completions.
+    let url = {
+        let last_seg = base_url.trim_end_matches('/').split('/').last().unwrap_or("");
+        let has_version = last_seg.starts_with('v')
+            && last_seg.len() > 1
+            && last_seg[1..].parse::<u32>().is_ok();
+        if has_version {
+            format!("{}/chat/completions", base_url.trim_end_matches('/'))
+        } else {
+            format!("{}/v1/chat/completions", base_url.trim_end_matches('/'))
+        }
     };
 
     let mut builder = Request::builder()
