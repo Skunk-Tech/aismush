@@ -20,7 +20,7 @@ AISmush automatically detects what kind of work each turn requires and routes to
 |-----------|------|-----------|-----|
 | Planning, architecture | Premium | **Claude** | Complex reasoning matters here |
 | Error recovery, debugging | Premium | **Claude** | Needs deep analysis to break out |
-| Code generation | Mid | **DeepSeek / OpenRouter** | Following an established plan |
+| Code generation | Mid | **DeepSeek / OpenRouter / GLM / LiteLLM** | Following an established plan |
 | Tool result processing | Free | **Ollama / local model** | Mechanical — zero cost |
 | File reads, simple edits | Free | **Ollama / local model** | No reasoning needed |
 | High blast-radius files | Premium | **Claude** | Shared types need careful handling |
@@ -80,8 +80,8 @@ The single biggest token saver. Older tool results in your conversation get repl
 - Saves **thousands of tokens per request** in long sessions
 
 ### Smart Multi-Provider Routing + Blast-Radius Analysis
-- Routes each turn across **Claude, DeepSeek, OpenRouter (290+ models), and local servers** (Ollama, LM Studio, llama.cpp, vLLM, Jan, KoboldCpp)
-- **Tier-based routing** — Free (local), Budget, Mid (DeepSeek/OpenRouter), Premium (Claude), Ultra (Opus)
+- Routes each turn across **Claude, DeepSeek, OpenRouter (290+ models), GLM, LiteLLM, and local servers** (Ollama, LM Studio, llama.cpp, vLLM, Jan, KoboldCpp)
+- **Tier-based routing** — Free (local), Budget, Mid (DeepSeek/OpenRouter/GLM/LiteLLM), Premium (Claude), Ultra (Opus)
 - **Blast-radius aware** — parses your project's import graph to know which files are shared by many others
 - Editing a leaf file? Local model handles it free. Editing a type definition imported by 12 files? Claude.
 - **Auto-discovery** — detects running local servers on known ports automatically
@@ -176,7 +176,7 @@ Built-in autonomous plan execution. Ask Claude to make a plan, then say **"run p
 
 ## Three Modes
 
-**Smart Routing** (default) — Routes between Claude, DeepSeek, OpenRouter, and local models. Max savings. Run `aismush --setup` to configure your providers.
+**Smart Routing** (default) — Routes between Claude, DeepSeek, OpenRouter, GLM, LiteLLM, and local models. Max savings. Run `aismush --setup` to configure your providers.
 ```bash
 aismush-start
 ```
@@ -189,6 +189,15 @@ aismush-start  # with Ollama running on port 11434
 **Direct Mode** — Claude only, no other providers needed. You still get compression, memory, agents, context management, and cost tracking. The dashboard shows what compression saves you.
 ```bash
 aismush-start --direct
+```
+
+**Force a Specific Provider** — Lock routing to one provider for the session. Useful for testing or when you want all turns to go through a particular backend.
+```bash
+aismush-start --deepseek      # Force all turns to DeepSeek
+aismush-start --glm           # Force all turns to GLM (Zhipu AI)
+aismush-start --openrouter    # Force all turns to OpenRouter
+aismush-start --litellm       # Force all turns to the first configured LiteLLM endpoint
+aismush-start --litellm bighaus  # Force all turns to the LiteLLM instance named "bighaus"
 ```
 
 All modes give you AI-generated project agents, persistent memory, context compression, and the full dashboard.
@@ -238,7 +247,7 @@ This downloads the right binary for your platform and installs it to `~/.local/b
 aismush-start
 ```
 
-First run offers interactive setup (`aismush --setup`) to configure DeepSeek, OpenRouter, and/or local models — with connection testing for each. Or just paste a DeepSeek key for quick start.
+First run offers interactive setup (`aismush --setup`) to configure DeepSeek, OpenRouter, GLM, LiteLLM, and/or local models — with connection testing for each. Or just paste a DeepSeek key for quick start.
 
 That downloads the latest Windows binary, installs to `%LOCALAPPDATA%\AISmush`, adds to PATH, and gives you `aismush-start` to run the proxy.
 
@@ -300,6 +309,8 @@ You work in Claude Code  ──or──  You work in Goose  ──or──  Any 
                             +---> Claude API (planning, debugging, high blast-radius, large context)
                             +---> DeepSeek API (code generation, moderate complexity)
                             +---> OpenRouter (290+ models, fallback option)
+                            +---> GLM (Zhipu AI — general or coding plan endpoint)
+                            +---> LiteLLM (OpenAI-compatible proxy — public or private)
                             +---> Local model (Ollama etc. — tool results, file reads — FREE)
                                        |
                                        +---> Response streams back to your agent
@@ -324,8 +335,14 @@ AISmush reads config from (in priority order):
 |----------|---------|-------------|
 | `DEEPSEEK_API_KEY` | (none) | Your DeepSeek API key |
 | `OPENROUTER_API_KEY` | (none) | Your OpenRouter API key |
+| `GLM_API_KEY` | (none) | Zhipu AI GLM API key |
+| `GLM_CODING_PLAN` | `false` | Use GLM Coding Plan endpoint (`api.z.ai/api/coding/paas/v4`) instead of general endpoint |
 | `LOCAL_MODEL_URL` | (none) | Local model server URL (e.g. `http://localhost:11434`) |
 | `LOCAL_MODEL_NAME` | (none) | Local model name (e.g. `qwen3:8b`) |
+| `LITELLM_URL` | (none) | LiteLLM proxy base URL (e.g. `https://bighaus.0dns.us/v1`) |
+| `LITELLM_MODEL` | (none) | Model name to use on the LiteLLM endpoint |
+| `LITELLM_NAME` | `litellm` | Name for the LiteLLM instance (used as provider ID `litellm-{name}`) |
+| `LITELLM_KEY` | (none) | API key for the LiteLLM endpoint (if required) |
 | `PROXY_PORT` | `1849` | Port for the proxy server |
 | `PROXY_VERBOSE` | `false` | Enable debug logging |
 | `FORCE_PROVIDER` | (none) | Force all requests to a specific provider |
@@ -344,8 +361,14 @@ AISmush reads config from (in priority order):
 {
   "apiKey": "sk-your-deepseek-key",
   "openrouterKey": "sk-or-your-key",
+  "glmKey": "your-zhipu-api-key",
+  "glmCodingPlan": false,
   "local": [
     {"name": "ollama", "url": "http://localhost:11434", "model": "qwen3:8b"}
+  ],
+  "litellm": [
+    {"name": "bighaus", "url": "https://bighaus.0dns.us/v1", "model": "gpt-4o", "key": ""},
+    {"name": "local-litellm", "url": "http://localhost:4000/v1", "model": "claude-3-haiku", "key": "sk-optional"}
   ],
   "routing": {
     "blastRadiusThreshold": 0.5,
@@ -520,7 +543,11 @@ A: Run `aismush --status` from any terminal, or visit `http://localhost:1849/das
 ```bash
 aismush              # Start the proxy server (smart routing, lightweight)
 aismush --direct     # Start in direct mode (Claude only, still compresses + tracks)
-aismush --setup      # Interactive provider setup (DeepSeek, OpenRouter, local models)
+aismush --deepseek   # Force all requests to DeepSeek (bypass routing)
+aismush --glm        # Force all requests to GLM (Zhipu AI)
+aismush --openrouter # Force all requests to OpenRouter
+aismush --litellm [name] # Force all requests to a specific LiteLLM endpoint
+aismush --setup      # Interactive provider setup (DeepSeek, OpenRouter, GLM, LiteLLM, local models)
 aismush --providers  # List all configured and discovered providers with health status
 aismush --embeddings # Start with semantic search enabled (loads 90MB model)
 aismush --scan       # Scan codebase, generate optimized agents
@@ -533,6 +560,10 @@ aismush --uninstall  # Uninstall AISmush
 aismush --help       # Show help
 
 aismush-start        # Start proxy + launch Claude Code (recommended)
+aismush-start --deepseek   # Start proxy + Claude, force DeepSeek routing
+aismush-start --glm        # Start proxy + Claude, force GLM routing
+aismush-start --openrouter # Start proxy + Claude, force OpenRouter routing
+aismush-start --litellm [name] # Start proxy + Claude, force LiteLLM routing
 ```
 
 ## Website
@@ -542,7 +573,7 @@ aismush-start        # Start proxy + launch Claude Code (recommended)
 ## Requirements
 
 - An AI coding agent: [Claude Code](https://claude.ai/code), [Goose](https://github.com/block/goose), or any client speaking the Anthropic or OpenAI API format
-- At least one of: [DeepSeek API key](https://platform.deepseek.com/api_keys) (free tier), [OpenRouter API key](https://openrouter.ai/keys), or a local model server (Ollama, LM Studio, etc.)
+- At least one of: [DeepSeek API key](https://platform.deepseek.com/api_keys) (free tier), [OpenRouter API key](https://openrouter.ai/keys), [GLM API key](https://bigmodel.cn), a LiteLLM proxy, or a local model server (Ollama, LM Studio, etc.)
 - Or just use `--direct` mode with Claude only (compression + memory still work)
 - Linux x86_64, macOS (Intel or Apple Silicon), or Windows x86_64
 
