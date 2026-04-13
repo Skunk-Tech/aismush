@@ -74,13 +74,17 @@ async fn main() {
         println!();
         println!("USAGE:");
         println!("  aismush              Start the proxy server (smart routing)");
-        println!("  aismush --direct     Start in direct mode (Claude only, no DeepSeek)");
+        println!("  aismush --direct     Force Claude only (no other providers)");
+        println!("  aismush --deepseek   Force DeepSeek for all requests");
+        println!("  aismush --glm        Force GLM for all requests");
+        println!("  aismush --openrouter Force OpenRouter for all requests");
+        println!("  aismush --litellm [name]  Force LiteLLM endpoint (name optional if only one configured)");
         println!("  aismush --scan       Scan codebase and generate optimized agents");
         println!("  aismush --version    Show version");
         println!("  aismush --status     Check if proxy is running");
         println!("  aismush --config     Show current configuration");
         println!("  aismush --proxy      Add/remove outbound proxies for Claude (saves to config)");
-        println!("  aismush --setup      Interactive provider setup (DeepSeek, OpenRouter, local)");
+        println!("  aismush --setup      Interactive provider setup (DeepSeek, OpenRouter, GLM, LiteLLM)");
         println!("  aismush --providers  List all configured and discovered providers");
         println!("  aismush --embeddings Start with semantic search enabled (loads 90MB model)");
         println!("  aismush --upgrade    Upgrade to latest version");
@@ -218,14 +222,39 @@ async fn main() {
         info!(key = &cfg.api_key[..8.min(cfg.api_key.len())], "DeepSeek key loaded");
     }
 
-    // --direct flag forces Claude-only mode
+    // Provider flags — override force_provider for this session
     if args.iter().any(|a| a == "--direct") {
         cfg.force_provider = Some("claude".to_string());
-        info!("Direct mode (Claude only — compression + memory + agents still active)");
-    } else if let Some(ref fp) = cfg.force_provider {
-        info!(provider = %fp, "Forced provider");
-    } else {
-        info!("Smart routing mode");
+    } else if args.iter().any(|a| a == "--deepseek") {
+        cfg.force_provider = Some("deepseek".to_string());
+    } else if args.iter().any(|a| a == "--glm") {
+        cfg.force_provider = Some("glm".to_string());
+    } else if args.iter().any(|a| a == "--openrouter") {
+        cfg.force_provider = Some("openrouter".to_string());
+    } else if let Some(pos) = args.iter().position(|a| a == "--litellm") {
+        // Optional name argument: --litellm [name]
+        let name = args.get(pos + 1)
+            .filter(|a| !a.starts_with('-'))
+            .cloned()
+            .unwrap_or_else(|| {
+                // Default to first configured LiteLLM server name, or "litellm"
+                cfg.litellm_servers.first()
+                    .map(|(n, _, _, _)| format!("litellm-{}", n))
+                    .unwrap_or_else(|| "litellm".to_string())
+            });
+        // Prefix with "litellm-" if not already
+        let provider_id = if name.starts_with("litellm-") { name } else { format!("litellm-{}", name) };
+        cfg.force_provider = Some(provider_id);
+    }
+
+    match cfg.force_provider.as_deref() {
+        Some("claude")    => info!("Forced provider: Claude only"),
+        Some("deepseek")  => info!("Forced provider: DeepSeek"),
+        Some("glm")       => info!("Forced provider: GLM"),
+        Some("openrouter")=> info!("Forced provider: OpenRouter"),
+        Some(p) if p.starts_with("litellm-") => info!("Forced provider: {}", p),
+        Some(p)           => info!(provider = %p, "Forced provider"),
+        None              => info!("Smart routing mode"),
     }
 
     info!(path = %cfg.data_dir.display(), "Data directory");

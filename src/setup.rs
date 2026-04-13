@@ -320,12 +320,39 @@ async fn prompt_litellm_endpoint(client: &HttpClient) -> Option<Value> {
     let url = prompt("     URL (e.g. https://bighaus.0dns.us/v1): ").trim().to_string();
     if url.is_empty() { println!("     \x1b[33mSkipped.\x1b[0m"); return None; }
 
-    let model = prompt("     Model name to send (e.g. gpt-4o, claude-3-5-sonnet-20241022): ").trim().to_string();
-    if model.is_empty() { println!("     \x1b[33mSkipped.\x1b[0m"); return None; }
-
     let key = prompt("     API key (or Enter for none): ").trim().to_string();
+    let api_key_opt: Option<&str> = if key.is_empty() { None } else { Some(&key) };
 
-    // Build test URL
+    // Try to detect available models from the endpoint
+    println!("     Fetching available models...");
+    let models = fetch_litellm_models(client, &url, api_key_opt).await;
+
+    let model = if models.is_empty() {
+        println!("     \x1b[33m(Could not fetch model list — enter manually)\x1b[0m");
+        let m = prompt("     Model name to use (e.g. gpt-4o): ").trim().to_string();
+        if m.is_empty() { println!("     \x1b[33mSkipped.\x1b[0m"); return None; }
+        m
+    } else {
+        println!("     Found {} model{}:", models.len(), if models.len() == 1 { "" } else { "s" });
+        for (i, m) in models.iter().enumerate() {
+            println!("       [{:2}] {}", i + 1, m);
+        }
+        let choice = prompt("     Pick a number, or type a model name: ").trim().to_string();
+        if choice.is_empty() { println!("     \x1b[33mSkipped.\x1b[0m"); return None; }
+        // If it's a number, use that model; otherwise treat as literal model name
+        if let Ok(n) = choice.parse::<usize>() {
+            if n >= 1 && n <= models.len() {
+                models[n - 1].clone()
+            } else {
+                println!("     \x1b[33mInvalid number, using as model name.\x1b[0m");
+                choice
+            }
+        } else {
+            choice
+        }
+    };
+
+    // Build test URL and verify with a real completion
     let last_seg = url.trim_end_matches('/').split('/').last().unwrap_or("");
     let has_version = last_seg.starts_with('v') && last_seg.len() > 1 && last_seg[1..].parse::<u32>().is_ok();
     let test_url = if has_version {
@@ -340,8 +367,7 @@ async fn prompt_litellm_endpoint(client: &HttpClient) -> Option<Value> {
         "messages": [{"role": "user", "content": "hi"}]
     });
 
-    println!("     Testing connection...");
-    let api_key_opt = if key.is_empty() { None } else { Some(key.as_str()) };
+    println!("     Testing with model '{}'...", model);
     match api_test(client, &test_url, api_key_opt, &body).await {
         Ok(status) => {
             if status == 200 || status == 429 {
@@ -362,6 +388,64 @@ async fn prompt_litellm_endpoint(client: &HttpClient) -> Option<Value> {
     }
 
     Some(json!({"name": name, "url": url, "model": model, "key": key}))
+}
+
+/// Fetch available models from a LiteLLM (OpenAI-compatible) /models endpoint.
+async fn fetch_litellm_models(client: &HttpClient, base_url: &str, api_key: Option<&str>) -> Vec<String> {
+    let last_seg = base_url.trim_end_matches('/').split('/').last().unwrap_or("");
+    let has_version = last_seg.starts_with('v') && last_seg.len() > 1 && last_seg[1..].parse::<u32>().is_ok();
+    let models_url = if has_version {
+        format!("{}/models", base_url.trim_end_matches('/'))
+    } else {
+        format!("{}/v1/models", base_url.trim_end_matches('/'))
+    };
+
+    let host = models_url.split("://").nth(1)
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("localhost");
+
+    let mut builder = Request::builder()
+        .method(hyper::Method::GET)
+        .uri(&models_url)
+        .header("content-type", "application/json")
+        .header("host", host);
+
+    if let Some(key) = api_key {
+        builder = builder.header("authorization", format!("Bearer {}", key));
+    }
+
+    let req = match builder.body(full(Bytes::new())) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+
+    let result = tokio::time::timeout(Duration::from_secs(8), client.request(req)).await;
+
+    let resp = match result {
+        Ok(Ok(r)) if r.status().is_success() => r,
+        _ => return vec![],
+    };
+
+    let body_bytes = match resp.into_body().collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return vec![],
+    };
+
+    let json: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+
+    // OpenAI models list: {"data": [{"id": "model-name"}, ...]}
+    json["data"].as_array()
+        .map(|arr| {
+            let mut ids: Vec<String> = arr.iter()
+                .filter_map(|m| m["id"].as_str().map(String::from))
+                .collect();
+            ids.sort();
+            ids
+        })
+        .unwrap_or_default()
 }
 
 /// Test DeepSeek API key with a minimal completion.
