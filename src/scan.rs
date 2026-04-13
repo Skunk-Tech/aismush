@@ -199,7 +199,22 @@ impl ProjectProfile {
 // ── AI pipeline ─────────────────────────────────────────────────────────────
 
 /// Send a prompt to the AI via the proxy and get a response.
+/// If DeepSeek fails and we have Claude available, automatically retry with Claude.
 pub async fn call_ai(prompt: &str, proxy_port: u16, api_key: &str, use_claude: bool) -> Result<String, String> {
+    // First attempt
+    let result = call_ai_inner(prompt, proxy_port, api_key, use_claude).await;
+
+    // If DeepSeek failed and we have Claude available, retry with Claude
+    if !use_claude && result.is_err() {
+        eprintln!("        DeepSeek failed, retrying with Claude...");
+        return call_ai_inner(prompt, proxy_port, api_key, true).await;
+    }
+
+    result
+}
+
+/// Inner implementation of AI call without automatic retry logic.
+async fn call_ai_inner(prompt: &str, proxy_port: u16, api_key: &str, use_claude: bool) -> Result<String, String> {
     let model = if use_claude { "claude-haiku-3-5-20241022" } else { "deepseek-chat" };
     // For Claude, use ANTHROPIC_API_KEY if available, otherwise the passed key
     let effective_key = if use_claude {

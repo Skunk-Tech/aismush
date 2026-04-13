@@ -1012,6 +1012,7 @@ async fn run_scan(args: &[String]) {
         eprintln!("        Using Claude for analysis (no DeepSeek key or direct mode)");
     } else {
         eprintln!("        Using DeepSeek for analysis (cost: ~$0.03)");
+        eprintln!("        (Will fall back to Claude if DeepSeek is unavailable)");
     }
     match scan::run_pipeline(&profile, &existing, cfg.port, &cfg.api_key, use_claude).await {
         Ok(result) => {
@@ -1034,7 +1035,8 @@ async fn run_scan(args: &[String]) {
         Err(e) => {
             eprintln!();
             eprintln!("  Error: {}", e);
-            eprintln!("  Make sure the proxy is running and DeepSeek API key is configured.");
+            eprintln!("  Make sure the proxy is running and at least one AI provider is configured.");
+            eprintln!("  Run 'aismush --setup' to configure DeepSeek, Claude, or a local model.");
         }
     }
 
