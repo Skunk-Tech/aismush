@@ -19,6 +19,8 @@ pub struct ProxyConfig {
     pub glm_coding: bool,
     /// Explicitly configured local model servers: (name, url, model)
     pub local_servers: Vec<(String, String, String)>,
+    /// LiteLLM proxy endpoints: (name, url, model, api_key)
+    pub litellm_servers: Vec<(String, String, String, String)>,
     /// Auto-discover local model servers on known ports
     pub auto_discover_local: bool,
     /// Routing configuration
@@ -67,6 +69,7 @@ struct FileConfig {
     glm_key: Option<String>,
     glm_coding_plan: Option<bool>,
     local: Option<Vec<LocalServerFileConfig>>,
+    litellm: Option<Vec<LiteLLMServerFileConfig>>,
     auto_discover_local: Option<bool>,
     routing: Option<RoutingFileConfig>,
     tool_mappings: Option<crate::tools::ToolMappings>,
@@ -81,6 +84,16 @@ struct LocalServerFileConfig {
     name: String,
     url: String,
     model: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct LiteLLMServerFileConfig {
+    name: String,
+    url: String,
+    model: String,
+    #[serde(default)]
+    key: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -155,6 +168,24 @@ impl ProxyConfig {
             }
         }
 
+        let mut litellm_servers: Vec<(String, String, String, String)> = Vec::new();
+
+        // From config file
+        if let Some(entries) = file_cfg.litellm {
+            for e in entries {
+                litellm_servers.push((e.name, e.url, e.model, e.key));
+            }
+        }
+
+        // From env vars (single LiteLLM shorthand)
+        if let (Ok(url), Ok(model)) = (env::var("LITELLM_URL"), env::var("LITELLM_MODEL")) {
+            if !url.is_empty() {
+                let name = env::var("LITELLM_NAME").unwrap_or_else(|_| "litellm".into());
+                let key = env::var("LITELLM_KEY").unwrap_or_default();
+                litellm_servers.push((name, url, model, key));
+            }
+        }
+
         let auto_discover_local = env::var("AISMUSH_AUTO_DISCOVER")
             .ok()
             .map(|v| v != "false" && v != "0")
@@ -202,7 +233,7 @@ impl ProxyConfig {
             .or(file_cfg.max_tpm)
             .unwrap_or(30_000);
 
-        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, glm_api_key, glm_coding, local_servers, auto_discover_local, routing, tool_mappings, max_concurrent_claude, proxies, max_tpm }
+        ProxyConfig { api_key, port, verbose, force_provider, data_dir, db_path, openrouter_api_key, glm_api_key, glm_coding, local_servers, litellm_servers, auto_discover_local, routing, tool_mappings, max_concurrent_claude, proxies, max_tpm }
     }
 
     fn load_file() -> FileConfig {

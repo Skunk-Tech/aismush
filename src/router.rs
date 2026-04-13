@@ -543,7 +543,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_decide_with_registry() {
-        let registry = crate::provider::build_registry("sk-test", "", "", false, &[]);
+        let registry = crate::provider::build_registry("sk-test", "", "", false, &[], &[]);
 
         // Planning -> Claude (Premium)
         let body = json!({"messages": [{"role": "user", "content": "Plan the auth system"}]});

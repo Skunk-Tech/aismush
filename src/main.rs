@@ -124,6 +124,14 @@ async fn main() {
         println!("Mode:            {}", cfg.force_provider.as_deref().unwrap_or("hybrid"));
         println!("Auto-discover:   {}", cfg.auto_discover_local);
         println!("Local servers:   {}", if cfg.local_servers.is_empty() { "(none)".into() } else { cfg.local_servers.iter().map(|(n,_,_)| n.as_str()).collect::<Vec<_>>().join(", ") });
+        if !cfg.litellm_servers.is_empty() {
+            for (name, url, model, key) in &cfg.litellm_servers {
+                println!("LiteLLM:         {} — {} (model: {}, key: {})", name, url, model,
+                    if key.is_empty() { "(none)".into() } else { format!("{}...", &key[..8.min(key.len())]) });
+            }
+        } else {
+            println!("LiteLLM:         (none)");
+        }
         println!("Blast threshold: {}", cfg.routing.blast_radius_threshold);
         println!("Max concurrent:  {}", cfg.max_concurrent_claude);
         println!("Proxies:         {}", if cfg.proxies.is_empty() { "none".to_string() } else { format!("{} configured", cfg.proxies.len()) });
@@ -146,7 +154,7 @@ async fn main() {
     }
     if args.iter().any(|a| a == "--providers") {
         let cfg = config::ProxyConfig::load();
-        let registry = provider::build_registry(&cfg.api_key, &cfg.openrouter_api_key, &cfg.glm_api_key, cfg.glm_coding, &cfg.local_servers);
+        let registry = provider::build_registry(&cfg.api_key, &cfg.openrouter_api_key, &cfg.glm_api_key, cfg.glm_coding, &cfg.local_servers, &cfg.litellm_servers);
         // Also run auto-discovery to show what's available
         rustls::crypto::ring::default_provider().install_default().ok();
         let https = HttpsConnectorBuilder::new()
@@ -155,7 +163,7 @@ async fn main() {
         let discovered = discovery::discover_local_servers(&client).await;
         discovery::register_discovered(&tokio::sync::RwLock::new(registry).into(), &discovered).await;
         // Re-read registry for display
-        let registry2 = provider::build_registry(&cfg.api_key, &cfg.openrouter_api_key, &cfg.glm_api_key, cfg.glm_coding, &cfg.local_servers);
+        let registry2 = provider::build_registry(&cfg.api_key, &cfg.openrouter_api_key, &cfg.glm_api_key, cfg.glm_coding, &cfg.local_servers, &cfg.litellm_servers);
         // Manually add discovered ones
         let mut display_reg = registry2;
         for d in &discovered {
@@ -258,6 +266,7 @@ async fn main() {
         &cfg.glm_api_key,
         cfg.glm_coding,
         &cfg.local_servers,
+        &cfg.litellm_servers,
     );
     let state = ProxyState::new(cfg.clone(), client, database, None, dashboard_html, registry);
 

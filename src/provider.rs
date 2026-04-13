@@ -379,7 +379,8 @@ pub fn build_registry(
     openrouter_api_key: &str,
     glm_api_key: &str,
     glm_coding: bool,
-    local_servers: &[(String, String, String)], // (name, url, model)
+    local_servers: &[(String, String, String)],          // (name, url, model)
+    litellm_servers: &[(String, String, String, String)], // (name, url, model, key)
 ) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
 
@@ -431,6 +432,20 @@ pub fn build_registry(
         );
     }
 
+    // LiteLLM proxy endpoints (public or private, OpenAI-compatible)
+    for (name, url, model, key) in litellm_servers {
+        let id = format!("litellm-{}", name);
+        let api_key = if key.is_empty() { None } else { Some(key.to_string()) };
+        registry.register(
+            ProviderConfig::new(id, ProviderKind::OpenAICompat, url.clone(), api_key, model.clone())
+                .with_tier(Tier::Mid)
+                .with_pricing(0.0, 0.0) // unknown — treat as cost-neutral
+                .with_context_window(128_000)
+                .with_max_output(16384)
+                .with_tools(true)
+        );
+    }
+
     // Explicitly configured local servers
     for (name, url, model) in local_servers {
         let id = format!("local-{}", name);
@@ -468,7 +483,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_cheapest() {
-        let registry = build_registry("sk-test", "", "", false, &[]);
+        let registry = build_registry("sk-test", "", "", false, &[], &[]);
         // Should find DeepSeek as cheapest at Mid tier
         let cheapest = registry.cheapest_healthy(Tier::Mid, 0, false).await;
         assert!(cheapest.is_some());
@@ -477,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_premium_gets_claude() {
-        let registry = build_registry("sk-test", "", "", false, &[]);
+        let registry = build_registry("sk-test", "", "", false, &[], &[]);
         let cheapest = registry.cheapest_healthy(Tier::Premium, 0, false).await;
         assert!(cheapest.is_some());
         assert_eq!(cheapest.unwrap().id, "claude");
@@ -485,7 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fallback_chain() {
-        let registry = build_registry("sk-test", "", "", false, &[]);
+        let registry = build_registry("sk-test", "", "", false, &[], &[]);
         let chain = registry.fallback_chain("deepseek", 0, false).await;
         assert!(!chain.is_empty());
         assert_eq!(chain[0].id, "claude"); // Claude is the fallback

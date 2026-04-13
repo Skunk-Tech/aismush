@@ -114,8 +114,53 @@ pub async fn run_setup(client: &HttpClient) {
     }
     println!();
 
+    // ── LiteLLM ───────────────────────────────────────────────────────
+    println!("  \x1b[1m4. LiteLLM\x1b[0m (OpenAI-compatible proxy — public or private)");
+    let existing_litellm: Vec<serde_json::Value> = config.get("litellm")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if !existing_litellm.is_empty() {
+        println!("     Configured endpoints:");
+        for entry in &existing_litellm {
+            let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let url  = entry.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+            let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("?");
+            println!("       • {} — {} (model: {})", name, url, model);
+        }
+        let action = prompt("     [a]dd another, [c]lear all, or Enter to keep: ");
+        match action.to_lowercase().trim() {
+            "a" => {
+                let mut list = existing_litellm.clone();
+                if let Some(entry) = prompt_litellm_endpoint(client).await {
+                    list.push(entry);
+                    config["litellm"] = Value::Array(list);
+                }
+            }
+            "c" => {
+                config["litellm"] = Value::Array(vec![]);
+                println!("     \x1b[33mCleared.\x1b[0m");
+            }
+            _ => println!("     \x1b[32mKept.\x1b[0m"),
+        }
+    } else {
+        println!("     No endpoints configured.");
+        println!("     LiteLLM can proxy to any model (OpenAI, Claude, Gemini, local, etc.).");
+        let key = prompt("     Add a LiteLLM endpoint? [y/N]: ");
+        if key.to_lowercase() == "y" {
+            let mut list = vec![];
+            if let Some(entry) = prompt_litellm_endpoint(client).await {
+                list.push(entry);
+                config["litellm"] = Value::Array(list);
+            }
+        } else {
+            println!("     \x1b[33mSkipped.\x1b[0m");
+        }
+    }
+    println!();
+
     // ── Local Models ──────────────────────────────────────────────────
-    println!("  \x1b[1m4. Local Models\x1b[0m (free — zero API costs)");
+    println!("  \x1b[1m5. Local Models\x1b[0m (free — zero API costs)");
     println!("     Scanning for local model servers...");
     let discovered = discovery::discover_local_servers(client).await;
     if discovered.is_empty() {
@@ -151,6 +196,7 @@ pub async fn run_setup(client: &HttpClient) {
     let has_or = config.get("openrouterKey").and_then(|k| k.as_str()).map_or(false, |k| !k.is_empty());
     let has_glm = config.get("glmKey").and_then(|k| k.as_str()).map_or(false, |k| !k.is_empty());
     let glm_coding = config.get("glmCodingPlan").and_then(|v| v.as_bool()).unwrap_or(false);
+    let litellm_count = config.get("litellm").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
     let has_local = !discovered.is_empty();
 
     if has_ds { println!("  \x1b[32m✓\x1b[0m DeepSeek — smart routing enabled"); }
@@ -161,11 +207,13 @@ pub async fn run_setup(client: &HttpClient) {
         let plan = if glm_coding { "Coding endpoint" } else { "General endpoint" };
         println!("  \x1b[32m✓\x1b[0m GLM — {} active", plan);
     } else { println!("  \x1b[33m-\x1b[0m GLM — not configured"); }
+    if litellm_count > 0 { println!("  \x1b[32m✓\x1b[0m LiteLLM — {} endpoint{} configured", litellm_count, if litellm_count == 1 { "" } else { "s" }); }
+    else { println!("  \x1b[33m-\x1b[0m LiteLLM — not configured"); }
     if has_local { println!("  \x1b[32m✓\x1b[0m Local models — free tier active"); }
     else { println!("  \x1b[33m-\x1b[0m Local models — none detected"); }
 
     println!();
-    if has_ds || has_or || has_glm || has_local {
+    if has_ds || has_or || has_glm || litellm_count > 0 || has_local {
         println!("  Run \x1b[1maismush-start\x1b[0m to begin coding with smart routing.");
     } else {
         println!("  Run \x1b[1maismush-start --direct\x1b[0m for Claude-only mode.");
@@ -262,6 +310,58 @@ async fn test_glm(client: &HttpClient, key: &str, coding: bool) -> bool {
             false
         }
     }
+}
+
+/// Prompt the user for a LiteLLM endpoint and test it. Returns the JSON entry on success.
+async fn prompt_litellm_endpoint(client: &HttpClient) -> Option<Value> {
+    let name = prompt("     Name (e.g. bighaus): ").trim().to_string();
+    if name.is_empty() { println!("     \x1b[33mSkipped.\x1b[0m"); return None; }
+
+    let url = prompt("     URL (e.g. https://bighaus.0dns.us/v1): ").trim().to_string();
+    if url.is_empty() { println!("     \x1b[33mSkipped.\x1b[0m"); return None; }
+
+    let model = prompt("     Model name to send (e.g. gpt-4o, claude-3-5-sonnet-20241022): ").trim().to_string();
+    if model.is_empty() { println!("     \x1b[33mSkipped.\x1b[0m"); return None; }
+
+    let key = prompt("     API key (or Enter for none): ").trim().to_string();
+
+    // Build test URL
+    let last_seg = url.trim_end_matches('/').split('/').last().unwrap_or("");
+    let has_version = last_seg.starts_with('v') && last_seg.len() > 1 && last_seg[1..].parse::<u32>().is_ok();
+    let test_url = if has_version {
+        format!("{}/chat/completions", url.trim_end_matches('/'))
+    } else {
+        format!("{}/v1/chat/completions", url.trim_end_matches('/'))
+    };
+
+    let body = json!({
+        "model": model,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    println!("     Testing connection...");
+    let api_key_opt = if key.is_empty() { None } else { Some(key.as_str()) };
+    match api_test(client, &test_url, api_key_opt, &body).await {
+        Ok(status) => {
+            if status == 200 || status == 429 {
+                println!("     \x1b[32m✓ LiteLLM endpoint is responding!\x1b[0m");
+            } else if status == 401 || status == 403 {
+                println!("     \x1b[31m✗ Auth failed (HTTP {}). Check your API key.\x1b[0m", status);
+                let save = prompt("     Save anyway? [y/N]: ");
+                if save.to_lowercase() != "y" { return None; }
+            } else {
+                println!("     \x1b[33m? HTTP {} — saving anyway.\x1b[0m", status);
+            }
+        }
+        Err(e) => {
+            println!("     \x1b[31m✗ Connection failed: {}\x1b[0m", e);
+            let save = prompt("     Save anyway? [y/N]: ");
+            if save.to_lowercase() != "y" { return None; }
+        }
+    }
+
+    Some(json!({"name": name, "url": url, "model": model, "key": key}))
 }
 
 /// Test DeepSeek API key with a minimal completion.
