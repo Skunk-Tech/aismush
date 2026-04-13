@@ -34,6 +34,26 @@ impl TokenRateGovernor {
         window.iter().map(|(_, n)| *n).sum()
     }
 
+    /// Retroactively replace the most-recent window entry with the actual token count
+    /// reported by Anthropic's SSE response. Called after stream completion when real
+    /// usage data is available. Corrects both over- and under-estimates so the window
+    /// stays accurate for subsequent requests.
+    pub async fn retroactive_update(&self, actual_tokens: u64) {
+        if self.max_tpm == 0 { return; }
+        let mut window = self.window.lock().await;
+        if let Some(last) = window.back_mut() {
+            let estimated = last.1;
+            if estimated != actual_tokens {
+                tracing::debug!(
+                    estimated,
+                    actual = actual_tokens,
+                    "Rate governor: correcting estimate with actual token count"
+                );
+                last.1 = actual_tokens;
+            }
+        }
+    }
+
     /// Wait until the window has capacity for `token_count` more tokens, then record them.
     /// If `max_tpm == 0`, records immediately without any delay.
     pub async fn wait_and_record(&self, token_count: u64) {

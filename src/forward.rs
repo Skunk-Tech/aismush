@@ -169,7 +169,8 @@ async fn send_direct_claude(
         .method(parts.method.clone())
         .uri(format!("https://api.anthropic.com{}", path));
     for (k, v) in &parts.headers {
-        if k == "host" || k == "connection" || k == "content-length" { continue; }
+        // Strip accept-encoding so Anthropic always returns plain-text SSE.
+        if k == "host" || k == "connection" || k == "content-length" || k == "accept-encoding" { continue; }
         builder = builder.header(k, v);
     }
     builder = builder.header("host", "api.anthropic.com");
@@ -179,6 +180,7 @@ async fn send_direct_claude(
             Ok(r) => {
                 let status = r.status();
                 let headers = r.headers().iter()
+                    .filter(|(k, _)| !k.as_str().eq_ignore_ascii_case("content-encoding"))
                     .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
                     .collect();
                 Ok((status, headers, StreamSource::Hyper(r.into_body().boxed())))
@@ -331,7 +333,9 @@ pub async fn claude(
         let proxy_url = format!("https://api.anthropic.com{}", path);
         let mut rb = proxy_client.request(parts.method.clone(), &proxy_url);
         for (k, v) in &parts.headers {
-            if k == "host" || k == "connection" || k == "content-length" { continue; }
+            // Strip accept-encoding: Anthropic must send plain text so truncated streams
+            // don't corrupt with ZlibError on the client side.
+            if k == "host" || k == "connection" || k == "content-length" || k == "accept-encoding" { continue; }
             rb = rb.header(k, v);
         }
         rb = rb.header("host", "api.anthropic.com");
@@ -341,6 +345,9 @@ pub async fn claude(
                 warn!(proxy_idx = pool.len(), "Claude via proxy");
                 let status = r.status();
                 let headers: Vec<(String, String)> = r.headers().iter()
+                    // Strip content-encoding: we never request compression so this
+                    // should never appear, but strip defensively to prevent ZlibError.
+                    .filter(|(k, _)| !k.as_str().eq_ignore_ascii_case("content-encoding"))
                     .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
                     .collect();
                 let source = StreamSource::Reqwest(Box::pin(r.bytes_stream()));
@@ -546,6 +553,13 @@ pub async fn claude(
                 // Fallback token estimate if SSE parsing returned 0
                 let input_tokens = if usage.input_tokens > 0 { usage.input_tokens } else { (total_bytes / 4) as u64 };
                 let output_tokens = if usage.output_tokens > 0 { usage.output_tokens } else { (total_bytes / 8) as u64 };
+
+                // Correct the rate governor window with actual input tokens (only uncached
+                // input counts toward Anthropic's ITPM limit). Pre-request estimate was
+                // body.len()/4 which can diverge significantly from reality.
+                if usage.input_tokens > 0 {
+                    state2.rate_governor.retroactive_update(usage.input_tokens).await;
+                }
 
                 // Tokens saved by compression (bytes_saved / 3 chars per token)
                 let comp_tokens_saved = if comp_original > comp_final { (comp_original - comp_final) / 3 } else { 0 };
