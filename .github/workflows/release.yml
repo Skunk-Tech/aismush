@@ -51,6 +51,7 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/
           cp start.sh dist/
+          cp scripts/aismush-start dist/
           cp README.md dist/
           cd dist && tar czf ../${{ matrix.artifact }}.tar.gz *
 
