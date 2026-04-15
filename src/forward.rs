@@ -861,7 +861,21 @@ pub async fn openai_compat(
     let body = parsed.clone().unwrap_or(Value::Object(Default::default()));
 
     // Convert Anthropic request format to OpenAI format
-    let openai_body = transform::anthropic_to_openai(&body, target_model);
+    let mut openai_body = transform::anthropic_to_openai(&body, target_model);
+    // OpenAI spec enforces a 64-char limit on tool function names
+    if let Some(tools) = openai_body.get_mut("tools").and_then(|t| t.as_array_mut()) {
+        for tool in tools.iter_mut() {
+            if let Some(name) = tool.pointer_mut("/function/name") {
+                if let Some(s) = name.as_str() {
+                    if s.len() > 64 {
+                        let mut end = 64;
+                        while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+                        *name = serde_json::Value::String(s[..end].to_string());
+                    }
+                }
+            }
+        }
+    }
     let body_bytes = serde_json::to_vec(&openai_body).unwrap_or_default();
 
     // Build the URL — ensure we hit /chat/completions.

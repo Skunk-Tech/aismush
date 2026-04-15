@@ -20,18 +20,36 @@ pub enum TaskType {
     CodeGeneration,
     /// Default / unclassified
     Default,
+    /// System-level design, ADRs, tradeoffs, high-level approach
+    Architecture,
+    /// Code restructuring without behavior change
+    Refactoring,
+    /// Writing, fixing, or running tests
+    Testing,
+    /// Auth, vulnerabilities, secrets, permissions, exploits
+    Security,
+    /// DB migrations, dep upgrades, breaking API changes
+    Migration,
+    /// Docs, comments, READMEs, docstrings
+    Documentation,
 }
 
 impl TaskType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            TaskType::Planning => "planning",
-            TaskType::Debugging => "debugging",
-            TaskType::ToolResult => "tool-result",
-            TaskType::SimpleEdit => "simple-edit",
-            TaskType::FileRead => "file-read",
+            TaskType::Planning      => "planning",
+            TaskType::Debugging     => "debugging",
+            TaskType::ToolResult    => "tool-result",
+            TaskType::SimpleEdit    => "simple-edit",
+            TaskType::FileRead      => "file-read",
             TaskType::CodeGeneration => "code-generation",
-            TaskType::Default => "default",
+            TaskType::Default       => "default",
+            TaskType::Architecture  => "architecture",
+            TaskType::Refactoring   => "refactoring",
+            TaskType::Testing       => "testing",
+            TaskType::Security      => "security",
+            TaskType::Migration     => "migration",
+            TaskType::Documentation => "documentation",
         }
     }
 }
@@ -267,9 +285,52 @@ fn classify_task(
             let text = extract_text(last);
             let lower = text.to_lowercase();
 
+            // Security — check first (most safety-critical, must not be downgraded)
+            if lower.contains("auth") || lower.contains("vulnerab") || lower.contains("secret")
+                || lower.contains("permission") || lower.contains("sql inject")
+                || lower.contains(" xss") || lower.contains(" csrf") || lower.contains(" cve")
+                || lower.contains("exploit") || lower.contains("sanitize") || lower.contains("encrypt") {
+                return TaskType::Security;
+            }
+
+            // Migration — irreversible, must be careful
+            if lower.contains("migrat") || lower.contains("breaking change")
+                || lower.contains("deprecat") || lower.contains("schema change")
+                || (lower.contains("upgrade") && (lower.contains("major") || lower.contains("breaking"))) {
+                return TaskType::Migration;
+            }
+
+            // Architecture — high-level system design
+            if lower.contains("system design") || lower.contains("design doc")
+                || lower.contains(" adr") || lower.contains("tradeoff")
+                || lower.contains("high-level") || lower.contains("approach for")
+                || lower.contains("scalab") {
+                return TaskType::Architecture;
+            }
+
+            // Refactoring — restructure without behavior change
+            if lower.contains("refactor") || lower.contains("restructure")
+                || lower.contains("clean up") || lower.contains("reorganize")
+                || lower.contains("extract ") || lower.contains("rename ") {
+                return TaskType::Refactoring;
+            }
+
+            // Testing
+            if lower.contains(" test") || lower.contains("coverage")
+                || lower.contains("unit test") || lower.contains("integration test")
+                || lower.contains(" tdd") || lower.contains("assertion") || lower.contains(" mock") {
+                return TaskType::Testing;
+            }
+
+            // Documentation
+            if lower.contains("docstring") || lower.contains("write docs")
+                || lower.contains("add docs") || lower.contains("document this")
+                || (lower.contains("comment") && lower.contains("explain")) {
+                return TaskType::Documentation;
+            }
+
             // Planning keywords
             if lower.contains("plan") || lower.contains("architect") || lower.contains("design")
-                || lower.contains("refactor") || lower.contains("restructure")
                 || lower.contains("how should") || lower.contains("what's the best way") {
                 return TaskType::Planning;
             }
@@ -281,7 +342,7 @@ fn classify_task(
                 return TaskType::Debugging;
             }
 
-            // File read patterns (tool results containing file content)
+            // File read patterns
             if lower.contains("read") || lower.contains("show me") || lower.contains("what's in") {
                 return TaskType::FileRead;
             }
@@ -302,13 +363,20 @@ fn determine_min_tier(signals: &RoutingSignals, blast_threshold: f64) -> Tier {
 
     // Task type requirements
     let task_tier = match signals.task_type {
-        TaskType::Planning => Tier::Premium,
-        TaskType::Debugging => Tier::Mid,
-        TaskType::ToolResult => Tier::Free,
-        TaskType::FileRead => Tier::Free,
-        TaskType::SimpleEdit => Tier::Budget,
+        TaskType::Planning      => Tier::Premium,
+        TaskType::Debugging     => Tier::Mid,
+        TaskType::ToolResult    => Tier::Free,
+        TaskType::FileRead      => Tier::Free,
+        TaskType::SimpleEdit    => Tier::Budget,
         TaskType::CodeGeneration => Tier::Mid,
-        TaskType::Default => Tier::Mid,
+        TaskType::Default       => Tier::Mid,
+        // ORACLE-derived tiers
+        TaskType::Architecture  => Tier::Premium,  // needs full reasoning chain
+        TaskType::Refactoring   => Tier::Premium,  // high blast radius risk
+        TaskType::Testing       => Tier::Mid,      // structured but not critical
+        TaskType::Security      => Tier::Premium,  // never cut corners here
+        TaskType::Migration     => Tier::Premium,  // irreversible operations
+        TaskType::Documentation => Tier::Budget,   // low stakes, cheap model fine
     };
     if task_tier > min_tier { min_tier = task_tier; }
 

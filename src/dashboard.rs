@@ -51,7 +51,7 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
 .btn:hover {{ border-color:var(--blue); color:var(--blue); }}
 .date-btn.active {{ border-color:var(--blue); color:var(--blue); background:rgba(88,166,255,0.1); }}
 .btn.danger:hover {{ border-color:var(--red); color:var(--red); }}
-#page-history, #page-search, #page-memories {{ display:none; }}
+#page-history, #page-search, #page-memories, #page-graph {{ display:none; }}
 .footer {{ margin-top:24px; color:var(--dim); font-size:11px; text-align:center; }}
 </style>
 </head>
@@ -65,6 +65,7 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
   <div class="tab" onclick="showPage('history',this)">History</div>
   <div class="tab" onclick="showPage('search',this)">Search</div>
   <div class="tab" onclick="showPage('memories',this)">Memories</div>
+  <div class="tab" onclick="showPage('graph',this)">Graph</div>
 </div>
 
 <!-- Overview Page -->
@@ -156,6 +157,23 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
   </div>
 </div>
 
+<!-- Graph Page -->
+<div id="page-graph">
+  <div class="section">
+    <h2>Symbol Search</h2>
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <input type="text" id="symbol-query" placeholder="Search symbols... e.g. 'handle_request', 'Db', 'parse'" style="flex:1;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font);font-size:13px" onkeydown="if(event.key==='Enter')runSymbolSearch()">
+      <button class="btn" onclick="runSymbolSearch()" style="padding:8px 16px">Search</button>
+    </div>
+    <div id="symbol-results"><p style="color:var(--dim);font-size:12px">Search for functions, structs, classes, and types across your scanned projects.</p></div>
+  </div>
+  <div class="section" id="graph-top-section">
+    <h2>Top Impacted Files</h2>
+    <p style="font-size:11px;color:var(--dim);margin-bottom:12px">Files ranked by blast radius — how many other files transitively depend on them.</p>
+    <div id="graph-top-files"><p style="color:var(--dim);font-size:12px">Loading...</p></div>
+  </div>
+</div>
+
 <div class="footer">
   <a href="/stats" style="color:var(--blue)">JSON Stats</a> ·
   <a href="/history" style="color:var(--blue)">JSON History</a> ·
@@ -176,6 +194,7 @@ function showPage(page, el) {{
   if (page === 'history') loadHistory();
   if (page === 'memories') loadMemories();
   if (page === 'search') document.getElementById('search-query').focus();
+  if (page === 'graph') {{ loadGraphTopFiles(); document.getElementById('symbol-query').focus(); }}
 }}
 
 async function runSearch() {{
@@ -380,6 +399,72 @@ async function resetStats() {{
   await fetch('/stats/reset', {{ method: 'POST' }});
   refresh();
   if (currentPage === 'history') loadHistory();
+}}
+
+async function runSymbolSearch() {{
+  const query = document.getElementById('symbol-query').value.trim();
+  if (!query) return;
+  const results = document.getElementById('symbol-results');
+  results.innerHTML = '<p style="color:var(--dim)">Searching...</p>';
+  try {{
+    const r = await fetch('/graph/symbols?q=' + encodeURIComponent(query));
+    const data = await r.json();
+    if (!data || data.length === 0) {{
+      results.innerHTML = '<p style="color:var(--dim)">No symbols found.</p>';
+      return;
+    }}
+    const kindColor = {{ function:'var(--blue)', method:'var(--blue)', struct:'var(--green)',
+                         class:'var(--green)', trait:'var(--purple)', interface:'var(--purple)',
+                         type:'var(--yellow)', constant:'var(--yellow)', variable:'var(--dim)' }};
+    results.innerHTML = '<table><thead><tr><th>Symbol</th><th>Kind</th><th>File</th><th>Signature</th><th>Blast Radius</th></tr></thead><tbody>' +
+      data.map(s => {{
+        const col = kindColor[s.symbol_kind] || 'var(--text)';
+        const br = s.blast_radius_score > 0 ? s.blast_radius_score.toFixed(2) : '–';
+        const brColor = s.blast_radius_score >= 0.7 ? 'var(--red)' : s.blast_radius_score >= 0.4 ? 'var(--yellow)' : 'var(--dim)';
+        return `<tr>
+          <td style="color:${{col}};font-weight:600">${{s.symbol_name}}</td>
+          <td><span class="tag" style="background:#21262d;color:${{col}}">${{s.symbol_kind}}</span></td>
+          <td style="color:var(--dim);font-size:11px">${{s.file_path}}</td>
+          <td style="color:var(--dim);font-size:11px;font-family:var(--font)">${{s.signature}}</td>
+          <td style="color:${{brColor}};font-weight:bold">${{br}}</td>
+        </tr>`;
+      }}).join('') + '</tbody></table>';
+  }} catch(e) {{
+    results.innerHTML = '<p style="color:var(--red)">Search failed: ' + e.message + '</p>';
+  }}
+}}
+
+async function loadGraphTopFiles() {{
+  try {{
+    const r = await fetch('/graph/top');
+    const data = await r.json();
+    const el = document.getElementById('graph-top-files');
+    if (!data || data.length === 0) {{
+      el.innerHTML = '<p style="color:var(--dim);font-size:12px">No blast radius data yet. Run <code>aismush --scan &lt;project&gt;</code> to index a project.</p>';
+      return;
+    }}
+    el.innerHTML = '<table><thead><tr><th>File</th><th>Direct Deps</th><th>Transitive Deps</th><th>Blast Radius</th></tr></thead><tbody>' +
+      data.map(f => {{
+        const score = f.score || 0;
+        const barColor = score >= 0.7 ? 'var(--red)' : score >= 0.4 ? 'var(--yellow)' : 'var(--green)';
+        const pct = Math.round(score * 100);
+        return `<tr>
+          <td style="font-size:12px">${{f.file_path}}</td>
+          <td style="color:var(--dim)">${{f.direct_importers||0}}</td>
+          <td style="color:var(--dim)">${{f.transitive_importers||0}}</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="width:80px;background:#21262d;border-radius:3px;height:8px">
+                <div style="width:${{pct}}%;background:${{barColor}};height:100%;border-radius:3px"></div>
+              </div>
+              <span style="color:${{barColor}};font-weight:bold;font-size:12px">${{score.toFixed(2)}}</span>
+            </div>
+          </td>
+        </tr>`;
+      }}).join('') + '</tbody></table>';
+  }} catch(e) {{
+    document.getElementById('graph-top-files').innerHTML = '<p style="color:var(--dim);font-size:12px">No data available.</p>';
+  }}
 }}
 
 // Auto-refresh every 5s

@@ -24,6 +24,7 @@ mod proxy_pool;
 mod rate_governor;
 mod scan;
 mod search;
+mod symbols;
 mod setup;
 mod state;
 mod summarize;
@@ -428,7 +429,11 @@ async fn extract_blast_radius_score(db: &db::Db, project_path: &str, body: &serd
                 if let Some(path) = input.get("file_path").and_then(|p| p.as_str()) {
                     // Normalize: strip leading ./ or project path prefix
                     let rel_path = path.trim_start_matches("./");
-                    if let Some(br) = deps::lookup_blast_radius(db, project_path, rel_path).await {
+                    // Prefer symbol-level blast radius (AST-based, more precise);
+                    // fall back to file-level if symbol data isn't available yet.
+                    let br = deps::lookup_symbol_blast_radius(db, project_path, rel_path).await
+                        .or(deps::lookup_blast_radius(db, project_path, rel_path).await);
+                    if let Some(br) = br {
                         max_score = Some(max_score.unwrap_or(0.0).max(br.score));
                     }
                 }
@@ -503,6 +508,27 @@ async fn handle(
             if let Some(ref database) = state.db {
                 let memories = db::get_memories(database).await;
                 return Ok(json_resp(StatusCode::OK, &serde_json::to_string(&memories).unwrap()));
+            }
+            return Ok(json_resp(StatusCode::OK, "[]"));
+        }
+        if path.starts_with("/graph/symbols") {
+            let query = path.split("q=").nth(1)
+                .and_then(|q| q.split('&').next())
+                .map(|q| urlencoding_decode(q))
+                .unwrap_or_default();
+            let project = path.split("project=").nth(1)
+                .and_then(|p| p.split('&').next())
+                .map(|p| urlencoding_decode(p));
+            if let Some(ref database) = state.db {
+                let hits = search::search_symbols(database, &query, project.as_deref(), 50).await;
+                return Ok(json_resp(StatusCode::OK, &serde_json::to_string(&hits).unwrap()));
+            }
+            return Ok(json_resp(StatusCode::OK, "[]"));
+        }
+        if path.starts_with("/graph/top") {
+            if let Some(ref database) = state.db {
+                let top = deps::top_blast_radius_files(database, 30).await;
+                return Ok(json_resp(StatusCode::OK, &serde_json::to_string(&top).unwrap()));
             }
             return Ok(json_resp(StatusCode::OK, "[]"));
         }
@@ -1042,6 +1068,62 @@ async fn run_scan(args: &[String]) {
     eprintln!("        Found {} files", profile.total_files);
     eprintln!("        Sampled {} config files + {} code files",
         profile.config_files.len(), profile.sampled_code.len());
+
+    // Step 1b: Incremental code graph indexing (hashes → deps → AST symbols)
+    {
+        let project_str = project_path.to_string_lossy().to_string();
+        if let Ok(db) = db::open(std::path::Path::new(&cfg.db_path)) {
+            eprint!("  [1b] Indexing code graph (incremental)...");
+            let stored = hashes::load_stored_hashes(&db, &project_str).await;
+            let delta = hashes::compute_delta(&project_path, &stored);
+            let changed_count = delta.changed.len();
+            let deleted_count = delta.deleted.len();
+
+            // Update file hashes
+            hashes::store_hashes(&db, &project_str, &delta.changed, &delta.deleted).await;
+
+            // Rebuild file-level dependency graph from all files (changed + unchanged)
+            let unchanged_fh: Vec<hashes::FileHash> = delta.unchanged.iter().map(|p| {
+                let ext = std::path::Path::new(p).extension()
+                    .and_then(|e| e.to_str()).unwrap_or("");
+                hashes::FileHash {
+                    file_path: p.clone(),
+                    sha256: String::new(),
+                    file_size: 0,
+                    language: hashes::detect_language(ext).to_string(),
+                }
+            }).collect();
+            let all_files: Vec<hashes::FileHash> = delta.changed.iter()
+                .cloned()
+                .chain(unchanged_fh)
+                .collect();
+            let graph = deps::build_graph(&project_path, &all_files);
+            deps::store_graph(&db, &project_str, &graph).await;
+
+            // Extract symbols for changed files only (incremental)
+            let mut sym_count = 0usize;
+            for fh in &delta.changed {
+                let full_path = project_path.join(&fh.file_path);
+                if let Ok(content) = std::fs::read_to_string(&full_path) {
+                    let file_syms = symbols::extract_symbols(&content, &fh.language);
+                    sym_count += file_syms.symbols.len();
+                    symbols::store_symbols(&db, &project_str, &fh.file_path, &file_syms).await;
+                }
+            }
+            // Remove symbols for deleted files
+            symbols::delete_symbols(&db, &project_str, &delta.deleted).await;
+
+            // Recompute symbol-level blast radii when something changed
+            if changed_count > 0 || deleted_count > 0 {
+                symbols::compute_symbol_blast_radii(&db, &project_str).await;
+            }
+
+            eprintln!(" {} changed, {} deleted, {} symbols indexed",
+                changed_count, deleted_count, sym_count);
+        } else {
+            eprintln!("  [1b] Code graph: skipped (db unavailable)");
+        }
+    }
 
     // Detect existing artifacts
     let existing = scan::detect_existing(&project_path);

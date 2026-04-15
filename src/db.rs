@@ -225,6 +225,65 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         )?;
     }
 
+    if version < 7 {
+        info!("Running migration v7: code_symbols + symbol_refs + symbols_fts + symbol_blast_radius (AST-based code graph)");
+        conn.execute_batch(
+            "-- Named symbols extracted from source files via Tree-sitter AST
+             CREATE TABLE IF NOT EXISTS code_symbols (
+                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                 project_path TEXT NOT NULL,
+                 file_path    TEXT NOT NULL,
+                 symbol_name  TEXT NOT NULL,
+                 symbol_kind  TEXT NOT NULL,
+                 start_line   INTEGER DEFAULT 0,
+                 end_line     INTEGER DEFAULT 0,
+                 is_exported  INTEGER DEFAULT 0,
+                 signature    TEXT DEFAULT '',
+                 UNIQUE(project_path, file_path, symbol_name, symbol_kind)
+             );
+
+             -- Cross-file symbol references (call graph, type refs, imports)
+             CREATE TABLE IF NOT EXISTS symbol_refs (
+                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                 project_path TEXT NOT NULL,
+                 from_file    TEXT NOT NULL,
+                 from_symbol  TEXT DEFAULT '',
+                 to_file      TEXT NOT NULL,
+                 to_symbol    TEXT NOT NULL,
+                 ref_kind     TEXT NOT NULL,
+                 UNIQUE(project_path, from_file, from_symbol, to_file, to_symbol, ref_kind)
+             );
+
+             -- BM25 keyword search over symbol names
+             CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+                 symbol_name, file_path, signature,
+                 content=code_symbols, content_rowid=id
+             );
+
+             -- Symbol-level blast radius (more precise than file-level)
+             CREATE TABLE IF NOT EXISTS symbol_blast_radius (
+                 project_path       TEXT NOT NULL,
+                 file_path          TEXT NOT NULL,
+                 symbol_name        TEXT NOT NULL,
+                 direct_callers     INTEGER DEFAULT 0,
+                 transitive_callers INTEGER DEFAULT 0,
+                 score              REAL DEFAULT 0.0,
+                 computed_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                 PRIMARY KEY(project_path, file_path, symbol_name)
+             );
+
+             CREATE INDEX IF NOT EXISTS idx_symbols_project  ON code_symbols(project_path);
+             CREATE INDEX IF NOT EXISTS idx_symbols_file     ON code_symbols(project_path, file_path);
+             CREATE INDEX IF NOT EXISTS idx_symbols_name     ON code_symbols(project_path, symbol_name);
+             CREATE INDEX IF NOT EXISTS idx_symrefs_from     ON symbol_refs(project_path, from_file, from_symbol);
+             CREATE INDEX IF NOT EXISTS idx_symrefs_to       ON symbol_refs(project_path, to_file, to_symbol);
+             CREATE INDEX IF NOT EXISTS idx_sym_blast_file   ON symbol_blast_radius(project_path, file_path);
+
+             INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '7');
+            "
+        )?;
+    }
+
     Ok(())
 }
 

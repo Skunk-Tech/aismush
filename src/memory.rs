@@ -220,6 +220,9 @@ pub async fn inject_memories(db: &Db, body: &mut Value, project_path: &str) {
     // L0+L1: Critical memories (importance >= 2: decisions, preferences, discoveries)
     let critical = fetch_critical_memories(db, project_path).await;
 
+    // L1.5: Code graph context — blast radius + exports for recently touched files
+    let graph_context = inject_symbol_context(db, project_path, body).await;
+
     // L2: Topic-relevant memories (if we detected a topic)
     let topic_mems = if !current_topic.is_empty() {
         fetch_topic_memories(db, project_path, &current_topic).await
@@ -230,7 +233,7 @@ pub async fn inject_memories(db: &Db, body: &mut Value, project_path: &str) {
     // L3: Recent turns
     let recent = get_recent_turns(db, project_path).await;
 
-    if critical.is_empty() && topic_mems.is_empty() && recent.is_empty() {
+    if critical.is_empty() && graph_context.is_none() && topic_mems.is_empty() && recent.is_empty() {
         return;
     }
 
@@ -243,6 +246,14 @@ pub async fn inject_memories(db: &Db, body: &mut Value, project_path: &str) {
         if memory_text.len() + line.len() > MAX_CHARS { break; }
         memory_text.push_str(&line);
         count += 1;
+    }
+
+    // L1.5: Code graph context (blast radius + exports for touched files)
+    if let Some(graph) = &graph_context {
+        if memory_text.len() + graph.len() < MAX_CHARS {
+            memory_text.push_str(graph);
+            count += 1;
+        }
     }
 
     // L2: Topic-relevant (if budget remains)
@@ -297,6 +308,59 @@ pub async fn inject_memories(db: &Db, body: &mut Value, project_path: &str) {
 }
 
 /// Extract the current conversation topic from the last user message.
+/// Inject code graph context for files recently touched in the conversation.
+/// Looks at tool_use blocks where Claude read/edited files, then injects
+/// the blast radius and exported symbols for those files (budget: ~150 chars).
+async fn inject_symbol_context(db: &Db, project_path: &str, body: &Value) -> Option<String> {
+    use crate::deps;
+    use crate::symbols;
+
+    // Collect file paths from recent tool_use inputs (Read, Edit, Write, Bash)
+    let mut touched: Vec<String> = Vec::new();
+    if let Some(messages) = body["messages"].as_array() {
+        for msg in messages.iter().rev().take(8) {
+            if let Some(content) = msg["content"].as_array() {
+                for block in content {
+                    if block["type"].as_str() == Some("tool_use") {
+                        if let Some(path) = block["input"]["file_path"].as_str()
+                            .or_else(|| block["input"]["path"].as_str())
+                        {
+                            let rel = path.trim_start_matches("./").to_string();
+                            if !touched.contains(&rel) { touched.push(rel); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if touched.is_empty() { return None; }
+
+    let mut parts: Vec<String> = Vec::new();
+    for file in touched.iter().take(3) {
+        let br = deps::lookup_symbol_blast_radius(db, project_path, file).await
+            .or(deps::lookup_blast_radius(db, project_path, file).await);
+        let Some(br) = br else { continue };
+        if br.score < 0.2 { continue; } // skip trivial files
+
+        let exports = symbols::get_file_exports(db, project_path, file).await;
+        let pub_names: Vec<&str> = exports.iter()
+            .filter(|s| s.is_exported)
+            .take(6)
+            .map(|s| s.name.as_str())
+            .collect();
+
+        let line = if pub_names.is_empty() {
+            format!("- [graph] {} blast_radius={:.2} ({} deps)\n", file, br.score, br.transitive_importers)
+        } else {
+            format!("- [graph] {} blast_radius={:.2} exports: {}\n",
+                file, br.score, pub_names.join(", "))
+        };
+        parts.push(line);
+    }
+
+    if parts.is_empty() { None } else { Some(parts.concat()) }
+}
+
 fn extract_user_topic(body: &Value) -> String {
     if let Some(msgs) = body.get("messages").and_then(|m| m.as_array()) {
         for msg in msgs.iter().rev() {

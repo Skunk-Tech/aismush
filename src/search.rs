@@ -206,6 +206,31 @@ fn get_turn_detail(conn: &rusqlite::Connection, turn_id: i64, score: f32) -> Res
     })
 }
 
+/// Search for symbols by name using BM25 (FTS5) over the code graph.
+/// Returns (symbol_name, kind, file_path, signature, blast_radius_score).
+pub async fn search_symbols(
+    db: &Db,
+    query: &str,
+    project: Option<&str>,
+    limit: usize,
+) -> Vec<crate::symbols::SymbolSearchHit> {
+    use crate::symbols;
+    let project_str = project.unwrap_or("").to_string();
+    if project_str.is_empty() {
+        return Vec::new();
+    }
+    symbols::search_symbols(db, &project_str, query, limit).await
+        .into_iter()
+        .map(|(name, kind, file, sig, score)| symbols::SymbolSearchHit {
+            symbol_name: name,
+            symbol_kind: kind,
+            file_path: file,
+            signature: sig,
+            blast_radius_score: score,
+        })
+        .collect()
+}
+
 /// Get all turns in a conversation.
 pub async fn get_conversation(db: &Db, conversation_id: i64) -> Vec<serde_json::Value> {
     let db = db.clone();
@@ -234,3 +259,4 @@ pub async fn get_conversation(db: &Db, conversation_id: i64) -> Vec<serde_json::
         Some(rows)
     }).await.ok().flatten().unwrap_or_default()
 }
+

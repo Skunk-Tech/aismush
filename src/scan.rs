@@ -461,7 +461,7 @@ pub async fn run_pipeline(
         }
     }
 
-    // Step 6: Install engineering workflow skills (agent-skills by Addy Osmani)
+    // Step 6: Install engineering workflow skills (Claude Code on Steroids, MIT licensed)
     eprintln!("  [6/7] Installing engineering workflows...");
     let eng_installed = install_engineering_skills(&profile.root, &existing.skills);
     if eng_installed > 0 {
@@ -614,12 +614,12 @@ pub struct WriteSummary {
     pub claude_md_skipped: bool,
 }
 
-// ── Engineering skills (agent-skills by Addy Osmani, MIT licensed) ──────────
+// ── Engineering skills (Claude Code on Steroids by GadaaLabs, MIT licensed) ──
 
-/// Download agent-skills repo to cache and install all skills into the project.
+/// Download Claude Code on Steroids repo to cache and install all skills into the project.
 /// Returns number of skills installed (skips existing).
 fn install_engineering_skills(project_root: &Path, existing_skills: &[String]) -> usize {
-    let cache_dir = dirs_home().join(".hybrid-proxy").join("agent-skills");
+    let cache_dir = dirs_home().join(".hybrid-proxy").join("claude-code-on-steroids");
     let skills_src = cache_dir.join("skills");
 
     // Clone or update the repo
@@ -627,7 +627,7 @@ fn install_engineering_skills(project_root: &Path, existing_skills: &[String]) -
         eprintln!("        Downloading engineering skills...");
         let status = std::process::Command::new("git")
             .args(["clone", "--depth", "1", "--single-branch",
-                   "https://github.com/addyosmani/agent-skills.git",
+                   "https://github.com/GadaaLabs/claude-code-on-steroids.git",
                    cache_dir.to_str().unwrap_or(".")])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -692,7 +692,7 @@ fn install_engineering_skills(project_root: &Path, existing_skills: &[String]) -
         }
     }
 
-    // Also copy agents if they exist (agent-skills has 3 specialist personas)
+    // Also copy agents if they exist (Claude Code on Steroids includes specialist personas)
     let agents_src = cache_dir.join("agents");
     if agents_src.exists() {
         let agents_dir = project_root.join(".claude").join("agents");

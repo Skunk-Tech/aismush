@@ -26,6 +26,7 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "lock",
 ];
 
+#[derive(Clone)]
 pub struct FileHash {
     pub file_path: String,
     pub sha256: String,

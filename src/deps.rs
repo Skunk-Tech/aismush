@@ -200,6 +200,79 @@ pub async fn lookup_blast_radius(db: &Db, project_path: &str, file_path: &str) -
     }).await.ok().flatten()
 }
 
+/// Look up the highest symbol-level blast radius score for any exported symbol
+/// in a file. Returns None if no symbol data is available.
+/// This is more precise than file-level: changing a private helper vs. a
+/// public API are treated differently.
+pub async fn lookup_symbol_blast_radius(db: &Db, project_path: &str, file_path: &str) -> Option<BlastRadius> {
+    let db = db.clone();
+    let project = project_path.to_string();
+    let file = file_path.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = db.blocking_lock();
+        // Take the maximum score across all exported symbols in the file
+        conn.query_row(
+            "SELECT MAX(direct_callers), MAX(transitive_callers), MAX(score)
+             FROM symbol_blast_radius sbr
+             JOIN code_symbols cs
+               ON cs.project_path = sbr.project_path
+               AND cs.file_path = sbr.file_path
+               AND cs.symbol_name = sbr.symbol_name
+             WHERE sbr.project_path = ?1 AND sbr.file_path = ?2 AND cs.is_exported = 1",
+            params![project, file],
+            |row| {
+                let direct: Option<i64> = row.get(0)?;
+                let transitive: Option<i64> = row.get(1)?;
+                let score: Option<f64> = row.get(2)?;
+                let d = direct.unwrap_or(0) as usize;
+                let t = transitive.unwrap_or(0) as usize;
+                let s = score.unwrap_or(0.0);
+                Ok(BlastRadius {
+                    direct_importers: d,
+                    transitive_importers: t,
+                    is_leaf: d == 0,
+                    is_shared: d >= 5,
+                    score: s,
+                })
+            },
+        ).ok()
+    }).await.ok().flatten()
+    .and_then(|br| if br.score > 0.0 { Some(br) } else { None })
+}
+
+/// Return the top N files by blast radius score (for the Graph dashboard tab).
+#[derive(Debug, serde::Serialize)]
+pub struct BlastRadiusEntry {
+    pub file_path: String,
+    pub direct_importers: usize,
+    pub transitive_importers: usize,
+    pub score: f64,
+}
+
+pub async fn top_blast_radius_files(db: &Db, limit: usize) -> Vec<BlastRadiusEntry> {
+    let db = db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.blocking_lock();
+        let mut stmt = conn.prepare(
+            "SELECT file_path, direct_importers, transitive_importers, score
+             FROM blast_radius_cache
+             ORDER BY score DESC
+             LIMIT ?1"
+        ).ok()?;
+        let rows: Vec<BlastRadiusEntry> = stmt.query_map(
+            rusqlite::params![limit as i64],
+            |row| Ok(BlastRadiusEntry {
+                file_path: row.get(0)?,
+                direct_importers: row.get::<_, i64>(1)? as usize,
+                transitive_importers: row.get::<_, i64>(2)? as usize,
+                score: row.get(3)?,
+            }),
+        ).ok()?.filter_map(|r| r.ok()).collect();
+        Some(rows)
+    }).await.ok().flatten().unwrap_or_default()
+}
+
 // ── Rust import parsing ─────────────────────────────────────────────────
 
 fn parse_rust_imports(content: &str, file_path: &str) -> Vec<String> {
