@@ -69,7 +69,7 @@ pub fn anthropic_to_openai(body: &Value, model: &str) -> Value {
         let openai_tools: Vec<Value> = tools.iter().map(|tool| {
             let name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
             // OpenAI enforces a 64-character limit on function names
-            let name = if name.len() > 64 { &name[..64] } else { name };
+            let name = if name.len() > 64 { &name[..name.floor_char_boundary(64)] } else { name };
             json!({
                 "type": "function",
                 "function": {

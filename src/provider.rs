@@ -82,12 +82,15 @@ impl HealthState {
         match self {
             HealthState::Healthy | HealthState::Degraded { .. } => true,
             HealthState::RateLimited { until, .. } => Instant::now() >= *until,
-            HealthState::Down { .. } => false,
+            // Circuit-breaker half-open: after 10 minutes down, let one request through.
+            // If it succeeds, mark_healthy() is called and the provider recovers.
+            HealthState::Down { since, .. } => since.elapsed().as_secs() > 600,
         }
     }
 
     pub fn is_down(&self) -> bool {
-        matches!(self, HealthState::Down { .. })
+        // Only report as fully down if within the 10-minute circuit-breaker window.
+        matches!(self, HealthState::Down { since, .. } if since.elapsed().as_secs() <= 600)
     }
 
     pub fn is_rate_limited(&self) -> bool {

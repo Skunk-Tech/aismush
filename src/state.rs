@@ -36,12 +36,11 @@ pub struct ProxyState {
     pub claude_semaphore: Arc<tokio::sync::Semaphore>,
     /// Round-robin pool of outbound proxy clients for Claude requests.
     pub proxy_pool: Option<crate::proxy_pool::ProxyPool>,
-    /// Tool classifier for client-agnostic tool name detection.
-    /// Used by intelligence pipeline; will be passed to file_cache/memory/capture when refactored.
-    #[allow(dead_code)]
-    pub tool_classifier: ToolClassifier,
     /// Sliding-window token-per-minute governor. Throttles requests to stay under Anthropic's TPM limit.
     pub rate_governor: TokenRateGovernor,
+    /// Shared tool classifier built from config tool_mappings — ensures user-configured
+    /// custom tool names are recognized in memory extraction and conversation capture.
+    pub tool_classifier: ToolClassifier,
 }
 
 #[derive(Default, Debug, serde::Serialize)]
@@ -75,12 +74,11 @@ pub struct ReportedStats {
 }
 
 impl ProxyState {
-    pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>, embedder: Option<EmbeddingEngine>, dashboard_html: String, registry: ProviderRegistry) -> Arc<Self> {
-        let instance_id = load_or_create_instance_id(&config.data_dir);
-        let tool_classifier = ToolClassifier::new(config.tool_mappings.as_ref());
+    pub fn new(config: ProxyConfig, client: HttpClient, db: Option<Db>, embedder: Option<EmbeddingEngine>, dashboard_html: String, registry: ProviderRegistry, instance_id: String) -> Arc<Self> {
         let max_concurrent = config.max_concurrent_claude;
         let max_tpm = config.max_tpm;
         let proxy_pool = crate::proxy_pool::ProxyPool::build(&config.proxies);
+        let tool_classifier = ToolClassifier::new(config.tool_mappings.as_ref());
         Arc::new(Self {
             config,
             client,
@@ -95,15 +93,16 @@ impl ProxyState {
             rate_limit_pressure: std::sync::atomic::AtomicU64::new(0),
             claude_semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
             proxy_pool,
-            tool_classifier,
             rate_governor: TokenRateGovernor::new(max_tpm),
+            tool_classifier,
         })
     }
 }
 
 /// Persistent machine fingerprint. Created once, stored in data_dir/instance_id.
 /// Survives restarts so the global dashboard can count unique installations.
-fn load_or_create_instance_id(data_dir: &std::path::Path) -> String {
+/// Called before ProxyState::new so the ID is available for dashboard rendering.
+pub fn load_or_create_instance_id(data_dir: &std::path::Path) -> String {
     let id_path = data_dir.join("instance_id");
     if let Ok(id) = std::fs::read_to_string(&id_path) {
         let id = id.trim().to_string();

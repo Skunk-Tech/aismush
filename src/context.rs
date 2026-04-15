@@ -217,10 +217,11 @@ fn trim_old_messages(body: &mut Value, target_tokens: usize) {
         messages.remove(i);
     }
 
-    // Insert summary where removed messages were
+    // Insert summary where removed messages were.
+    // Use assistant role to avoid creating adjacent user messages which some providers reject.
     messages.insert(keep_start, serde_json::json!({
-        "role": "user",
-        "content": format!("[Context management: {} earlier messages condensed to save {} tokens]", count, removed_tokens)
+        "role": "assistant",
+        "content": format!("[Context management: {} earlier messages removed to save ~{} tokens]", count, removed_tokens)
     }));
 
     info!(removed = count, tokens_freed = removed_tokens, "Trimmed old messages");

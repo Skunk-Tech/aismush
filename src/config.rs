@@ -246,8 +246,13 @@ impl ProxyConfig {
 
         for path in &paths {
             if let Ok(data) = fs::read_to_string(path) {
-                if let Ok(cfg) = serde_json::from_str::<FileConfig>(&data) {
-                    return cfg;
+                match serde_json::from_str::<FileConfig>(&data) {
+                    Ok(cfg) => return cfg,
+                    Err(e) => {
+                        // Print to stderr immediately — logging isn't initialized yet.
+                        eprintln!("[AISmush] WARNING: Config file {:?} exists but failed to parse: {}", path, e);
+                        eprintln!("[AISmush] Running with default configuration. Fix the JSON and restart.");
+                    }
                 }
             }
         }

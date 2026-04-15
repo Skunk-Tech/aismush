@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 /// Extract observations from the request body's messages.
 /// Looks for tool_use blocks (what the AI did) and captures them.
 /// Extract observations from the request body (pure parsing, no I/O).
-pub fn extract_observations(body: &Value) -> Vec<(String, String)> {
+pub fn extract_observations(body: &Value, classifier: &crate::tools::ToolClassifier) -> Vec<(String, String)> {
     let Some(messages) = body.get("messages").and_then(|m| m.as_array()) else {
         return Vec::new();
     };
@@ -29,7 +29,6 @@ pub fn extract_observations(body: &Value) -> Vec<(String, String)> {
                 let tool_name = block.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
                 let input = block.get("input");
 
-                let classifier = crate::tools::ToolClassifier::default();
                 let category_enum = classifier.classify(tool_name, input);
 
                 let observation = match &category_enum {

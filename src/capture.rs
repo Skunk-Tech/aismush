@@ -60,7 +60,7 @@ pub fn extract_user_message(body: &Value) -> Option<String> {
 
 /// Extract tool invocations from the request body.
 /// Looks at assistant messages for tool_use blocks.
-pub fn extract_tool_calls(body: &Value) -> Vec<(String, String)> {
+pub fn extract_tool_calls(body: &Value, classifier: &crate::tools::ToolClassifier) -> Vec<(String, String)> {
     let mut tools = Vec::new();
 
     let Some(messages) = body.get("messages").and_then(|m| m.as_array()) else {
@@ -88,7 +88,6 @@ pub fn extract_tool_calls(body: &Value) -> Vec<(String, String)> {
                 .to_string();
 
             let input = block.get("input");
-            let classifier = crate::tools::ToolClassifier::default();
             let tool_input = match classifier.classify(&tool_name, input) {
                 crate::tools::ToolCategory::FileRead | crate::tools::ToolCategory::FileWrite => {
                     input.and_then(|i| classifier.extract_file_path(i)).unwrap_or("?").to_string()

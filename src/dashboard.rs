@@ -2,7 +2,7 @@
 //! request history, memory viewer, and compression metrics.
 
 /// Render the main dashboard page (called once at startup, result is cached).
-pub async fn render(port: u16) -> String {
+pub async fn render(port: u16, instance_id: &str) -> String {
     format!(r##"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -183,6 +183,7 @@ td {{ padding:8px; border-bottom:1px solid #21262d; }}
 
 <script>
 const PORT = {port};
+const CSRF_TOKEN = '{instance_id}';
 let currentPage = 'overview';
 
 function showPage(page, el) {{
@@ -273,10 +274,16 @@ async function refresh() {{
     const s = await r.json();
 
     const grid = document.getElementById('stats-grid');
+    // Build provider breakdown cards dynamically
+    let providerCards = '';
+    if (s.providers) {{
+      for (const [name, info] of Object.entries(s.providers)) {{
+        providerCards += `<div class="card"><div class="l">${{name}}</div><div class="v">${{info.turns||0}}</div><div style="font-size:10px;color:var(--dim)">${{fmt(info.cost||0)}}</div></div>`;
+      }}
+    }}
     grid.innerHTML = `
       <div class="card"><div class="l">Requests</div><div class="v blue">${{s.total_requests||0}}</div></div>
-      <div class="card"><div class="l">Claude</div><div class="v purple">${{s.claude_turns||0}}</div></div>
-      <div class="card"><div class="l">DeepSeek</div><div class="v green">${{s.deepseek_turns||0}}</div></div>
+      ${{providerCards}}
       <div class="card"><div class="l">Input Tokens</div><div class="v">${{fmtK(s.total_input_tokens||0)}}</div></div>
       <div class="card"><div class="l">Output Tokens</div><div class="v">${{fmtK(s.total_output_tokens||0)}}</div></div>
       <div class="card"><div class="l">Avg Latency</div><div class="v">${{s.avg_latency_ms||0}}ms</div></div>
@@ -390,13 +397,13 @@ async function loadMemories() {{
 
 async function clearMemories() {{
   if (!confirm('Clear all memories?')) return;
-  await fetch('/memories/clear', {{ method: 'POST' }});
+  await fetch('/memories/clear', {{ method: 'POST', headers: {{ 'X-AISmush-Token': CSRF_TOKEN }} }});
   loadMemories();
 }}
 
 async function resetStats() {{
   if (!confirm('Reset ALL stats? This deletes all request history and cost data. Memories and conversations are kept.')) return;
-  await fetch('/stats/reset', {{ method: 'POST' }});
+  await fetch('/stats/reset', {{ method: 'POST', headers: {{ 'X-AISmush-Token': CSRF_TOKEN }} }});
   refresh();
   if (currentPage === 'history') loadHistory();
 }}
@@ -472,5 +479,5 @@ refresh();
 setInterval(() => {{ if (currentPage === 'overview') refresh(); }}, 5000);
 </script>
 </body>
-</html>"##, port = port)
+</html>"##, port = port, instance_id = instance_id)
 }

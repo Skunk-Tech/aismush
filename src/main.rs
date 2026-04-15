@@ -8,7 +8,6 @@ mod cost;
 mod dashboard;
 mod db;
 mod deps;
-#[allow(dead_code)]
 mod discovery;
 mod embeddings;
 mod file_cache;
@@ -269,11 +268,12 @@ async fn main() {
         }
     };
 
-    // Build HTTPS client
+    // Build HTTPS client (HTTP/1 + HTTP/2 for multiplexed Claude requests)
     let https = HttpsConnectorBuilder::new()
         .with_webpki_roots()
         .https_only()
         .enable_http1()
+        .enable_http2()
         .build();
 
     let client = Client::builder(TokioExecutor::new())
@@ -286,9 +286,10 @@ async fn main() {
         memory::decay_scores(db).await;
     }
 
-    // Start with no embedder — initialize it in background so the server can listen immediately
-    // Render dashboard HTML once at startup (static template, only port varies)
-    let dashboard_html = dashboard::render(cfg.port).await;
+    // Load or create the persistent instance ID (used for CSRF tokens and telemetry)
+    let instance_id = state::load_or_create_instance_id(&cfg.data_dir);
+    // Render dashboard HTML once at startup (embeds port and instance_id for CSRF protection)
+    let dashboard_html = dashboard::render(cfg.port, &instance_id).await;
     // Build provider registry from config
     let registry = provider::build_registry(
         &cfg.api_key,
@@ -298,7 +299,7 @@ async fn main() {
         &cfg.local_servers,
         &cfg.litellm_servers,
     );
-    let state = ProxyState::new(cfg.clone(), client, database, None, dashboard_html, registry);
+    let state = ProxyState::new(cfg.clone(), client, database, None, dashboard_html, registry, instance_id);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));
     let listener = TcpListener::bind(addr).await.expect("Failed to bind port");
@@ -456,7 +457,35 @@ async fn handle(
         if path == "/health" {
             return Ok(json_resp(StatusCode::OK, r#"{"status":"ok"}"#));
         }
-        if path == "/stats" {
+        if path == "/metrics" {
+            // Prometheus-compatible metrics endpoint
+            let stats = if let Some(ref database) = state.db {
+                db::get_stats(database, 0, 0).await
+            } else {
+                let s = state.stats.lock().await;
+                serde_json::to_value(&*s).unwrap_or_default()
+            };
+            let mut out = String::new();
+            for (key, val) in [
+                ("aismush_requests_total", stats["total_requests"].as_f64().unwrap_or(0.0)),
+                ("aismush_claude_turns_total", stats["claude_turns"].as_f64().unwrap_or(0.0)),
+                ("aismush_deepseek_turns_total", stats["deepseek_turns"].as_f64().unwrap_or(0.0)),
+                ("aismush_input_tokens_total", stats["total_input_tokens"].as_f64().unwrap_or(0.0)),
+                ("aismush_output_tokens_total", stats["total_output_tokens"].as_f64().unwrap_or(0.0)),
+                ("aismush_actual_cost_usd", stats["actual_cost"].as_f64().unwrap_or(0.0)),
+                ("aismush_savings_usd", stats["savings"].as_f64().unwrap_or(0.0)),
+                ("aismush_avg_latency_ms", stats["avg_latency_ms"].as_f64().unwrap_or(0.0)),
+                ("aismush_compressed_requests_total", stats["compressed_requests"].as_f64().unwrap_or(0.0)),
+            ] {
+                out.push_str(&format!("# TYPE {} gauge\n{} {}\n", key, key, val));
+            }
+            return Ok(Response::builder()
+                .status(200)
+                .header("content-type", "text/plain; version=0.0.4")
+                .body(full(Bytes::from(out)))
+                .unwrap());
+        }
+        if path == "/stats" || path.starts_with("/stats?") {
             if let Some(ref database) = state.db {
                 let (from_ts, to_ts) = parse_date_params(req.uri());
                 let stats = db::get_stats(database, from_ts, to_ts).await;
@@ -479,25 +508,24 @@ async fn handle(
             return Ok(Response::builder().status(200).header("content-type", "text/html").body(full(state.dashboard_html.clone())).unwrap());
         }
         if path.starts_with("/search") {
-            let query = path.split("q=").nth(1)
-                .and_then(|q| q.split('&').next())
-                .map(|q| urlencoding_decode(q))
-                .unwrap_or_default();
-            let project = path.split("project=").nth(1)
-                .and_then(|p| p.split('&').next())
-                .map(|p| urlencoding_decode(p));
-            let embedder_guard = state.embedder.read().await;
-            let results = search::search(
-                state.db.as_ref().unwrap_or(&state.db.clone().unwrap()),
-                embedder_guard.as_ref(),
-                &query,
-                project.as_deref(),
-                20,
-            ).await;
-            return Ok(json_resp(StatusCode::OK, &serde_json::to_string(&results).unwrap()));
+            let params = parse_query_params(&path);
+            let query = params.get("q").cloned().unwrap_or_default();
+            let project = params.get("project").cloned();
+            if let Some(ref database) = state.db {
+                let embedder_guard = state.embedder.read().await;
+                let results = search::search(
+                    database,
+                    embedder_guard.as_ref(),
+                    &query,
+                    project.as_deref(),
+                    20,
+                ).await;
+                return Ok(json_resp(StatusCode::OK, &serde_json::to_string(&results).unwrap()));
+            }
+            return Ok(json_resp(StatusCode::OK, "[]"));
         }
         if path.starts_with("/conversation/") {
-            let id: i64 = path.trim_start_matches("/conversation/").parse().unwrap_or(0);
+            let id: i64 = path.trim_start_matches("/conversation/").split('?').next().unwrap_or("").parse().unwrap_or(0);
             if let Some(ref db) = state.db {
                 let turns = search::get_conversation(db, id).await;
                 return Ok(json_resp(StatusCode::OK, &serde_json::to_string(&turns).unwrap()));
@@ -512,13 +540,9 @@ async fn handle(
             return Ok(json_resp(StatusCode::OK, "[]"));
         }
         if path.starts_with("/graph/symbols") {
-            let query = path.split("q=").nth(1)
-                .and_then(|q| q.split('&').next())
-                .map(|q| urlencoding_decode(q))
-                .unwrap_or_default();
-            let project = path.split("project=").nth(1)
-                .and_then(|p| p.split('&').next())
-                .map(|p| urlencoding_decode(p));
+            let params = parse_query_params(&path);
+            let query = params.get("q").cloned().unwrap_or_default();
+            let project = params.get("project").cloned();
             if let Some(ref database) = state.db {
                 let hits = search::search_symbols(database, &query, project.as_deref(), 50).await;
                 return Ok(json_resp(StatusCode::OK, &serde_json::to_string(&hits).unwrap()));
@@ -534,10 +558,8 @@ async fn handle(
         }
         if path.starts_with("/memory/context") {
             if let Some(ref database) = state.db {
-                let project = path.split("project=").nth(1)
-                    .and_then(|p| p.split('&').next())
-                    .map(|p| urlencoding_decode(p))
-                    .unwrap_or_else(|| "default".to_string());
+                let params = parse_query_params(&path);
+                let project = params.get("project").cloned().unwrap_or_else(|| "default".to_string());
                 let text = memory::get_context_text(database, &project).await;
                 return Ok(Response::builder()
                     .status(200)
@@ -550,6 +572,10 @@ async fn handle(
         }
     }
     if method == hyper::Method::POST && path == "/stats/reset" {
+        // CSRF guard: dashboard embeds instance_id and sends it as X-AISmush-Token
+        if !verify_csrf_token(&req, &state.instance_id) {
+            return Ok(json_resp(StatusCode::FORBIDDEN, r#"{"error":"missing or invalid X-AISmush-Token"}"#));
+        }
         if let Some(ref database) = state.db {
             db::reset_stats(database).await;
             // Also reset in-memory stats
@@ -561,6 +587,9 @@ async fn handle(
         return Ok(json_resp(StatusCode::OK, r#"{"ok":true,"message":"All stats reset"}"#));
     }
     if method == hyper::Method::POST && path == "/memories/clear" {
+        if !verify_csrf_token(&req, &state.instance_id) {
+            return Ok(json_resp(StatusCode::FORBIDDEN, r#"{"error":"missing or invalid X-AISmush-Token"}"#));
+        }
         if let Some(ref database) = state.db {
             db::clear_memories(database).await;
             return Ok(json_resp(StatusCode::OK, r#"{"ok":true}"#));
@@ -569,10 +598,8 @@ async fn handle(
     }
     if method == hyper::Method::POST && path.starts_with("/memory/summarize") {
         if let Some(ref database) = state.db {
-            let project = path.split("project=").nth(1)
-                .and_then(|p| p.split('&').next())
-                .map(|p| urlencoding_decode(p))
-                .unwrap_or_else(|| "default".to_string());
+            let params = parse_query_params(&path);
+            let project = params.get("project").cloned().unwrap_or_else(|| "default".to_string());
             let db = database.clone();
             let port = state.config.port;
             let api_key = state.config.api_key.clone();
@@ -631,7 +658,7 @@ async fn handle(
 
     // ── Extract observations from tool_use blocks (non-blocking) ────────
     if let (Some(ref db), Some(ref body_val)) = (&state.db, &parsed) {
-        let observations = memory::extract_observations(body_val);
+        let observations = memory::extract_observations(body_val, &state.tool_classifier);
         if !observations.is_empty() {
             let db = db.clone();
             let project = project_path.clone();
@@ -765,8 +792,11 @@ async fn handle(
         forward::claude(&parts, &final_body, &path, &model, &route.reason, &project_path, comp_orig, comp_final, parsed.as_ref(), client_info.inbound_format, &cn, &state).await
     } else if route.provider == "deepseek" {
         // DeepSeek uses its Anthropic-compatible endpoint (no format conversion needed)
+        let ds_model = route.provider_config.as_ref()
+            .map(|p| p.default_model.as_str())
+            .unwrap_or("deepseek-chat");
         let cn = client_info.kind.to_string();
-        forward::deepseek(&final_body, &path, &parsed, "deepseek-chat", &route.reason, &project_path, comp_orig, comp_final, client_info.inbound_format, &cn, &state).await
+        forward::deepseek(&final_body, &path, &parsed, ds_model, &route.reason, &project_path, comp_orig, comp_final, client_info.inbound_format, &cn, &state).await
     } else {
         // All other providers use OpenAI-compatible format with conversion
         let provider_config = route.provider_config.as_ref();
@@ -792,6 +822,31 @@ fn parse_date_params(uri: &hyper::Uri) -> (i64, i64) {
         }
     }
     (from_ts, to_ts)
+}
+
+/// CSRF guard for dashboard write endpoints.
+/// The dashboard HTML embeds the instance_id and sends it as "X-AISmush-Token".
+/// A cross-origin browser request cannot set custom headers without CORS preflight,
+/// so this prevents CSRF from malicious web pages pointing at localhost.
+fn verify_csrf_token(req: &Request<hyper::body::Incoming>, instance_id: &str) -> bool {
+    req.headers()
+        .get("x-aismush-token")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == instance_id)
+        .unwrap_or(false)
+}
+
+/// Parse query parameters from a path+query string like "/path?key=val&key2=val2".
+/// Returns a HashMap of decoded key→value pairs.
+fn parse_query_params(path: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let query = path.find('?').map(|i| &path[i + 1..]).unwrap_or("");
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            map.insert(urlencoding_decode(k), urlencoding_decode(v));
+        }
+    }
+    map
 }
 
 /// Tiny HTTP GET for --status check (localhost only).

@@ -16,7 +16,6 @@ struct KnownServer {
     name: &'static str,
     port: u16,
     health_path: &'static str,
-    models_path: &'static str,
     /// How to extract model name from the health/models response
     detect: DetectMethod,
 }
@@ -33,13 +32,13 @@ enum DetectMethod {
 }
 
 const KNOWN_SERVERS: &[KnownServer] = &[
-    KnownServer { name: "ollama", port: 11434, health_path: "/api/tags", models_path: "/api/tags", detect: DetectMethod::OllamaTags },
-    KnownServer { name: "lm-studio", port: 1234, health_path: "/v1/models", models_path: "/v1/models", detect: DetectMethod::OpenAIModels },
-    KnownServer { name: "llama-cpp", port: 8080, health_path: "/health", models_path: "/v1/models", detect: DetectMethod::HealthThenModels },
-    KnownServer { name: "vllm", port: 8000, health_path: "/health", models_path: "/v1/models", detect: DetectMethod::HealthThenModels },
-    KnownServer { name: "jan", port: 1337, health_path: "/v1/models", models_path: "/v1/models", detect: DetectMethod::OpenAIModels },
-    KnownServer { name: "text-gen-webui", port: 5000, health_path: "/v1/models", models_path: "/v1/models", detect: DetectMethod::OpenAIModels },
-    KnownServer { name: "koboldcpp", port: 5001, health_path: "/api/v1/model", models_path: "/api/v1/model", detect: DetectMethod::KoboldModel },
+    KnownServer { name: "ollama",         port: 11434, health_path: "/api/tags",       detect: DetectMethod::OllamaTags },
+    KnownServer { name: "lm-studio",      port: 1234,  health_path: "/v1/models",      detect: DetectMethod::OpenAIModels },
+    KnownServer { name: "llama-cpp",      port: 8080,  health_path: "/health",         detect: DetectMethod::HealthThenModels },
+    KnownServer { name: "vllm",           port: 8000,  health_path: "/health",         detect: DetectMethod::HealthThenModels },
+    KnownServer { name: "jan",            port: 1337,  health_path: "/v1/models",      detect: DetectMethod::OpenAIModels },
+    KnownServer { name: "text-gen-webui", port: 5000,  health_path: "/v1/models",      detect: DetectMethod::OpenAIModels },
+    KnownServer { name: "koboldcpp",      port: 5001,  health_path: "/api/v1/model",   detect: DetectMethod::KoboldModel },
 ];
 
 /// Result of probing a local server.
@@ -204,33 +203,21 @@ pub async fn register_discovered(registry: &RwLock<ProviderRegistry>, servers: &
     for p in to_mark_healthy {
         p.mark_healthy();
     }
-}
 
-/// Background task: periodically re-discover local servers and update health.
-pub async fn discovery_loop(
-    client: HttpClient,
-    registry: Arc<RwLock<ProviderRegistry>>,
-) {
-    let mut interval = tokio::time::interval(Duration::from_secs(60));
-    interval.tick().await; // skip first immediate tick
-
-    loop {
-        interval.tick().await;
-
-        let discovered = discover_local_servers(&client).await;
-        register_discovered(&registry, &discovered).await;
-
-        // Mark non-responding discovered providers as down
-        let reg = registry.read().await;
-        let discovered_names: Vec<String> = discovered.iter().map(|d| format!("local-{}", d.name)).collect();
-        for provider in &reg.providers {
-            if provider.auto_discovered && !discovered_names.contains(&provider.id) {
-                if provider.is_healthy() {
-                    warn!(provider = %provider.id, "Auto-discovered provider no longer responding");
-                    provider.mark_down();
-                }
-            }
+    // Mark auto-discovered providers that did NOT appear in this scan as down.
+    // This keeps the registry accurate when local servers stop responding.
+    let discovered_ids: Vec<String> = servers.iter().map(|s| format!("local-{}", s.name)).collect();
+    let reg = registry.read().await;
+    let mut to_mark_down: Vec<Arc<ProviderConfig>> = Vec::new();
+    for provider in &reg.providers {
+        if provider.auto_discovered && !discovered_ids.contains(&provider.id) && provider.is_healthy() {
+            to_mark_down.push(provider.clone());
         }
+    }
+    drop(reg);
+    for p in to_mark_down {
+        warn!(provider = %p.id, "Auto-discovered provider no longer responding");
+        p.mark_down();
     }
 }
 

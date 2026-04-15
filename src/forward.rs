@@ -221,18 +221,26 @@ async fn deepseek_fallback(
     }
 
     warn!("Falling back to DeepSeek on Claude connection failure");
+    let ds_model = state.registry.read().await
+        .get("deepseek")
+        .map(|p| p.default_model.clone())
+        .unwrap_or_else(|| "deepseek-chat".to_string());
     let mut ds_body: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
-    ds_body["model"] = serde_json::Value::String("deepseek-chat".into());
+    ds_body["model"] = serde_json::Value::String(ds_model.clone());
     ds_body["temperature"] = serde_json::json!(0);
     if let serde_json::Value::Object(ref mut m) = ds_body {
         m.remove("thinking");
         m.remove("budget_tokens");
     }
-    // DeepSeek's Anthropic-compatible endpoint enforces a 64-char limit on tool names
+    // DeepSeek's Anthropic-compatible endpoint enforces a 64-char limit on tool names.
+    // Use floor_char_boundary to avoid panicking on multibyte characters.
     if let Some(tools) = ds_body.get_mut("tools").and_then(|t| t.as_array_mut()) {
         for tool in tools.iter_mut() {
             if let Some(name) = tool.get_mut("name").and_then(|n| n.as_str().map(|s| s.to_string())) {
-                if name.len() > 64 { tool["name"] = serde_json::Value::String(name[..64].to_string()); }
+                if name.len() > 64 {
+                    let boundary = name.floor_char_boundary(64);
+                    tool["name"] = serde_json::Value::String(name[..boundary].to_string());
+                }
             }
         }
     }
@@ -416,18 +424,26 @@ pub async fn claude(
     {
         warn!("Claude still 429, falling back to DeepSeek");
 
+        let ds_model_429 = state.registry.read().await
+            .get("deepseek")
+            .map(|p| p.default_model.clone())
+            .unwrap_or_else(|| "deepseek-chat".to_string());
         let mut ds_body: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
-        ds_body["model"] = serde_json::Value::String("deepseek-chat".into());
+        ds_body["model"] = serde_json::Value::String(ds_model_429.clone());
         ds_body["temperature"] = serde_json::json!(0);
         if let serde_json::Value::Object(ref mut m) = ds_body {
             m.remove("thinking");
             m.remove("budget_tokens");
         }
-        // DeepSeek's Anthropic-compatible endpoint enforces a 64-char limit on tool names
+        // DeepSeek's Anthropic-compatible endpoint enforces a 64-char limit on tool names.
+        // Use floor_char_boundary to avoid panicking on multibyte characters.
         if let Some(tools) = ds_body.get_mut("tools").and_then(|t| t.as_array_mut()) {
             for tool in tools.iter_mut() {
                 if let Some(name) = tool.get_mut("name").and_then(|n| n.as_str().map(|s| s.to_string())) {
-                    if name.len() > 64 { tool["name"] = serde_json::Value::String(name[..64].to_string()); }
+                    if name.len() > 64 {
+                        let boundary = name.floor_char_boundary(64);
+                        tool["name"] = serde_json::Value::String(name[..boundary].to_string());
+                    }
                 }
             }
         }
@@ -500,7 +516,7 @@ pub async fn claude(
             let project = project_path.to_string();
             let client = client_name.to_string();
             let user_msg = request_body.and_then(|b| capture::extract_user_message(b)).unwrap_or_default();
-            let tool_calls = request_body.map(|b| capture::extract_tool_calls(b)).unwrap_or_default();
+            let tool_calls = request_body.map(|b| capture::extract_tool_calls(b, &state.tool_classifier)).unwrap_or_default();
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
 
             tokio::spawn(async move {
@@ -644,7 +660,7 @@ pub async fn deepseek(
     }
 
     let mut transformed = parsed.clone().unwrap_or(Value::Object(Default::default()));
-    transformed["model"] = Value::String("deepseek-chat".into());
+    transformed["model"] = Value::String(model.to_string());
     transformed["temperature"] = serde_json::json!(0);
     if let Value::Object(ref mut m) = transformed {
         m.remove("thinking");
@@ -717,7 +733,7 @@ pub async fn deepseek(
             let project = project_path.to_string();
             let client = client_name.to_string();
             let ds_user_msg = parsed.as_ref().and_then(|b| capture::extract_user_message(b)).unwrap_or_default();
-            let ds_tool_calls = parsed.as_ref().map(|b| capture::extract_tool_calls(b)).unwrap_or_default();
+            let ds_tool_calls = parsed.as_ref().map(|b| capture::extract_tool_calls(b, &state.tool_classifier)).unwrap_or_default();
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
 
             tokio::spawn(async move {
@@ -774,7 +790,7 @@ pub async fn deepseek(
                 let output_tokens = if usage.output_tokens > 0 { usage.output_tokens } else { (total_bytes / 8) as u64 };
 
                 let comp_tokens_saved = if comp_original > comp_final { (comp_original - comp_final) / 3 } else { 0 };
-                let costs = cost::calculate_with_compression("deepseek", "deepseek-chat", input_tokens, output_tokens, comp_tokens_saved);
+                let costs = cost::calculate_with_compression("deepseek", &model, input_tokens, output_tokens, comp_tokens_saved);
 
                 {
                     let mut st = state2.stats.lock().await;
@@ -964,7 +980,7 @@ pub async fn openai_compat(
             let project = project_path.to_string();
             let client = client_name.to_string();
             let user_msg = parsed.as_ref().and_then(|b| capture::extract_user_message(b)).unwrap_or_default();
-            let tool_calls = parsed.as_ref().map(|b| capture::extract_tool_calls(b)).unwrap_or_default();
+            let tool_calls = parsed.as_ref().map(|b| capture::extract_tool_calls(b, &state.tool_classifier)).unwrap_or_default();
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(64);
 
             tokio::spawn(async move {
