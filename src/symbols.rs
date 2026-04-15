@@ -61,20 +61,14 @@ pub struct ExtractedSymbol {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefKind {
     Call,
-    TypeRef,
     Import,
-    Inherit,
-    Implement,
 }
 
 impl RefKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            RefKind::Call      => "call",
-            RefKind::TypeRef   => "type_ref",
-            RefKind::Import    => "import",
-            RefKind::Inherit   => "inherit",
-            RefKind::Implement => "implement",
+            RefKind::Call   => "call",
+            RefKind::Import => "import",
         }
     }
 }
@@ -819,33 +813,6 @@ pub async fn get_file_exports(db: &Db, project_path: &str, file_path: &str) -> V
     }).await.ok().flatten().unwrap_or_default()
 }
 
-/// Find all symbol refs that point to a given symbol name (callers/users).
-pub async fn get_callers(db: &Db, project_path: &str, symbol_name: &str) -> Vec<(String, String, String)> {
-    let db = db.clone();
-    let project = project_path.to_string();
-    let sym = symbol_name.to_string();
-
-    tokio::task::spawn_blocking(move || {
-        let conn = db.blocking_lock();
-        let mut stmt = conn.prepare(
-            "SELECT from_file, from_symbol, ref_kind
-             FROM symbol_refs
-             WHERE project_path = ?1 AND to_symbol = ?2
-             LIMIT 50"
-        ).ok()?;
-
-        let rows = stmt.query_map(params![project, sym], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        }).ok()?;
-
-        Some(rows.filter_map(|r| r.ok()).collect())
-    }).await.ok().flatten().unwrap_or_default()
-}
-
 /// BM25 keyword search over symbol names using FTS5.
 pub async fn search_symbols(
     db: &Db,
@@ -985,7 +952,12 @@ fn node_text(node: tree_sitter::Node, bytes: &[u8]) -> String {
 /// Extract the first line of a node as its "signature".
 fn first_line_of_node(node: tree_sitter::Node, content: &str) -> String {
     let start = node.start_byte();
-    let end = content.len().min(start + 200);
+    // Clamp end to a valid char boundary so slicing never panics on multibyte chars
+    let raw_end = content.len().min(start + 200);
+    let mut end = raw_end;
+    while end > start && !content.is_char_boundary(end) {
+        end -= 1;
+    }
     content[start..end]
         .lines()
         .next()
