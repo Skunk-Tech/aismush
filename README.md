@@ -19,10 +19,16 @@ AISmush automatically detects what kind of work each turn requires and routes to
 | Turn Type | Tier | Routed To | Why |
 |-----------|------|-----------|-----|
 | Planning, architecture | Premium | **Claude** | Complex reasoning matters here |
+| System design, ADRs | Premium | **Claude** | Tradeoff analysis needs full reasoning |
+| Refactoring, restructuring | Premium | **Claude** | High blast-radius risk — one wrong move |
+| Security issues (auth, vulns, XSS) | Premium | **Claude** | Never cut corners on security |
+| Migrations, breaking changes | Premium | **Claude** | Irreversible operations need precision |
 | Error recovery, debugging | Premium | **Claude** | Needs deep analysis to break out |
 | Code generation | Mid | **DeepSeek / OpenRouter / GLM / LiteLLM** | Following an established plan |
+| Test writing | Mid | **DeepSeek / OpenRouter / GLM / LiteLLM** | Structured but not critical |
 | Tool result processing | Free | **Ollama / local model** | Mechanical — zero cost |
 | File reads, simple edits | Free | **Ollama / local model** | No reasoning needed |
+| Documentation, docstrings | Budget | **Cheaper model** | Low stakes, any capable model will do |
 | High blast-radius files | Premium | **Claude** | Shared types need careful handling |
 | Large context (>64K tokens) | Premium | **Claude** | Beyond smaller model windows |
 
@@ -39,7 +45,8 @@ AISmush automatically detects what kind of work each turn requires and routes to
 - Detects existing `.claude/` files and skips them (use `--force` to overwrite)
 - Auto-starts proxy if not running — truly one command
 - **Incremental scanning** — SHA-256 hashes every file, re-scans only what changed
-- **Auto-installs 21 production-grade engineering workflow skills** from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) (MIT licensed) alongside your project-specific agents — covering the full dev lifecycle: TDD, code review, security, debugging, planning, CI/CD, performance, and docs. Cached locally at `~/.hybrid-proxy/agent-skills/`. No extra commands needed.
+- **Builds a native code graph** — Tree-sitter AST parsing extracts all symbols (functions, structs, classes, types), cross-file call references, and computes symbol-level blast radius for 6 languages (Rust, TypeScript, JavaScript, Python, Go, Java)
+- **Auto-installs 24 production-grade engineering workflow skills** from [Claude Code on Steroids](https://github.com/GadaaLabs/claude-code-on-steroids) (MIT licensed) — including ORACLE, HUNTER, FORGE, CHRONICLE, ARCHITECT, PATHFINDER, VECTOR and more. Cached locally at `~/.hybrid-proxy/claude-code-on-steroids/`. No extra commands needed.
 - First scan: ~$0.03. Re-scans: ~$0.003 (90% cheaper)
 
 **Scan output:**
@@ -55,19 +62,40 @@ AISmush automatically detects what kind of work each turn requires and routes to
 
 ### Engineering Workflows
 
-The 21 skills installed by `--scan` cover every phase of the development lifecycle:
+The 24 skills installed by `--scan` cover every phase of the development lifecycle:
 
-| Phase | Skills |
-|-------|--------|
-| **Define** | `idea-refine`, `spec-driven-development` |
-| **Plan** | `planning-and-task-breakdown` |
-| **Build** | `incremental-implementation`, `tdd`, `api-design`, `frontend-engineering` |
-| **Verify** | `browser-testing`, `debugging` |
-| **Review** | `code-review`, `simplification`, `security`, `performance` |
-| **Ship** | `git-workflow`, `ci-cd`, `deprecation`, `documentation`, `launch` |
-| **Meta** | `context-engineering`, `using-agent-skills` |
+| Skill | Purpose |
+|-------|---------|
+| **ORACLE** | Task classification and routing — picks the right skill for any request |
+| **HUNTER** | Deep bug investigation and root cause analysis |
+| **FORGE** | Code generation with architectural awareness |
+| **CHRONICLE** | Documentation, ADRs, changelogs, and decision records |
+| **ARCHITECT** | System design, tradeoff analysis, and high-level planning |
+| **PATHFINDER** | Codebase exploration and dependency mapping |
+| **VECTOR** | Semantic search and context retrieval |
+| **GRADIENT** | Incremental refactoring with safety verification |
+| **+ 16 more** | TDD, code review, security, CI/CD, debugging, performance, and more |
 
-These are sourced from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) (MIT licensed), cached at `~/.hybrid-proxy/agent-skills/`, and installed into `.claude/skills/` alongside the AI-generated project-specific agents.
+Sourced from [Claude Code on Steroids](https://github.com/GadaaLabs/claude-code-on-steroids) (MIT licensed), cached at `~/.hybrid-proxy/claude-code-on-steroids/`, and installed into `.claude/skills/` alongside the AI-generated project-specific agents.
+
+### Native Code Graph — Symbol-Level Blast Radius
+
+AISmush builds a full AST-based code graph during `--scan`, entirely in native Rust. No external tools, no Node.js, no separate service — it ships in the binary.
+
+**What gets extracted:**
+- Every function, struct, class, trait, type alias, and constant — name, kind, line range, exported/private
+- Cross-file call references, type references, and imports
+- Symbol-level blast radius: how many other functions/files transitively call each symbol
+
+**What it powers:**
+- **Smarter routing** — editing a function called by 40 other files routes to Claude; editing an internal helper routes to DeepSeek
+- **Automatic context injection** — when you edit `src/db.rs`, the system prompt gains `[graph] src/db.rs blast_radius=0.91, exports: open, log_request, get_stats` without you doing anything
+- **Symbol search** — `/graph/symbols?q=handle_request` returns all matching functions across your project, ranked by blast radius
+- **Graph dashboard tab** — visual symbol explorer with blast radius heat map at `localhost:1849/dashboard` → Graph tab
+
+**Supported languages:** Rust, TypeScript, JavaScript, Python, Go, Java
+
+The graph is incremental — only files that changed since the last scan get re-parsed. Subsequent scans on large projects complete in seconds.
 
 ### Structural Summarization — 3-5x Token Reduction
 The single biggest token saver. Older tool results in your conversation get replaced with compact structural summaries — function signatures, type definitions, and imports — while your recent work stays fully intact.
@@ -154,6 +182,7 @@ Open `http://localhost:1849/dashboard` to see:
 - Recent requests table with per-request cost breakdown
 - Memory viewer with search and delete
 - Request history with full detail
+- **Graph tab** — symbol search across all scanned projects, top impacted files ranked by blast radius with visual score bars
 
 ### Plan Orchestrator — DAG-Based Parallel Execution
 Built-in autonomous plan execution. Ask Claude to make a plan, then say **"run plan"** — AISmush builds a dependency graph, maps each step to a specialized agent, and executes with maximum parallelism. Steps unblock individually as their dependencies complete — no waiting for entire waves to finish.
@@ -443,6 +472,9 @@ If a proxy attempt returns a 429 or connection error, AISmush automatically fall
 | `/memories` | GET | All stored memories (JSON) |
 | `/memories/clear` | POST | Delete all memories |
 | `/dashboard` | GET | Live HTML dashboard |
+| `/search?q=...` | GET | Hybrid semantic + keyword conversation search (JSON) |
+| `/graph/symbols?q=...` | GET | BM25 symbol search over AST-indexed code (JSON) |
+| `/graph/top` | GET | Top 30 files by blast radius score (JSON) |
 
 ## Data Storage
 
@@ -450,9 +482,9 @@ All data stays on your machine:
 
 ```
 ~/.hybrid-proxy/
-├── proxy.db          ← SQLite database (requests, sessions, memories)
-├── proxy.log         ← Proxy log output
-└── agent-skills/     ← Cached engineering workflow skills (from addyosmani/agent-skills)
+├── proxy.db                  ← SQLite database (requests, sessions, memories, code graph)
+├── proxy.log                 ← Proxy log output
+└── claude-code-on-steroids/  ← Cached engineering workflow skills (24 skills, MIT)
 ```
 
 ## Cost Comparison
@@ -470,12 +502,12 @@ Based on real usage with a large Rust/React/Node.js codebase:
 ## Architecture
 
 ```
-22 Rust modules:
+23 Rust modules:
 
 main.rs        — HTTP server + request pipeline
 config.rs      — JSON + env config loading
 provider.rs    — Provider abstraction (tiers, health, registry)
-router.rs      — Multi-factor tier-based routing engine
+router.rs      — Multi-factor tier-based routing engine (13 task types, ORACLE patterns)
 forward.rs     — Claude/DeepSeek/OpenAI-compat forwarding + streaming
 transform.rs   — Anthropic ↔ OpenAI format conversion
 client.rs      — Unified client abstraction for Claude Code, Goose, and generic agents
@@ -485,20 +517,21 @@ setup.rs       — Interactive provider setup with connection testing
 compress.rs    — Context compression engine
 summarize.rs   — Structural code summarization (3-5x token reduction)
 hashes.rs      — SHA-256 file hashing + incremental change detection
-deps.rs        — Dependency graph + blast-radius analysis
+deps.rs        — Dependency graph + blast-radius analysis (file-level + symbol-level)
+symbols.rs     — Tree-sitter AST extraction, symbol graph, BFS blast radius (6 languages)
 context.rs     — Provider-aware context window management
-memory.rs      — Cross-session persistent memory
+memory.rs      — Cross-session persistent memory + symbol context injection
 tokens.rs      — Token estimation
 cost.rs        — Dynamic pricing + compression-aware cost calculation
-db.rs          — SQLite persistence layer (with date filtering)
-dashboard.rs   — Live HTML dashboard with date range filtering
+db.rs          — SQLite persistence layer (schema v7, symbol tables)
+dashboard.rs   — Live HTML dashboard with Graph tab
 state.rs       — Shared state types + provider registry
 proxy_pool.rs  — Round-robin outbound proxy pool for Claude requests (429 defense)
 ```
 
-The `--scan` command fetches and caches the [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) library to `~/.hybrid-proxy/agent-skills/` on first use, then installs from cache on subsequent runs.
+The `--scan` command fetches and caches [Claude Code on Steroids](https://github.com/GadaaLabs/claude-code-on-steroids) to `~/.hybrid-proxy/claude-code-on-steroids/` on first use, then installs from cache on subsequent runs. It also builds an AST-based code graph stored in SQLite using Tree-sitter (compiled into the binary — no external tools required).
 
-**Dependencies:** tokio, hyper, rustls, serde, rusqlite (bundled). No OpenSSL, no Node.js, no runtime dependencies.
+**Dependencies:** tokio, hyper, rustls, serde, rusqlite (bundled), tree-sitter + 6 language grammars (compiled into binary). No OpenSSL, no Node.js, no runtime dependencies.
 
 ## FAQ
 
