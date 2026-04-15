@@ -178,6 +178,7 @@ Open `http://localhost:1849/dashboard` to see:
 - **Compression savings** — tokens saved by stripping comments/dedup (works in ALL modes, including direct)
 - **Routing savings** — money saved by sending turns to DeepSeek (smart routing mode)
 - In direct mode, shows how much you *could* save by enabling smart routing
+- **Per-provider breakdown** — live turn counts and byte totals for every active provider
 - Request counts, routing distribution
 - Recent requests table with per-request cost breakdown
 - Memory viewer with search and delete
@@ -468,6 +469,7 @@ If a proxy attempt returns a 429 or connection error, AISmush automatically fall
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/stats` | GET | Aggregated statistics (JSON) |
+| `/metrics` | GET | Prometheus-format gauge metrics (scrape with Grafana/Prometheus) |
 | `/history` | GET | Recent request log (JSON) |
 | `/memories` | GET | All stored memories (JSON) |
 | `/memories/clear` | POST | Delete all memories |
