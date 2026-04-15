@@ -669,6 +669,17 @@ pub async fn deepseek(
     if transformed["max_tokens"].as_u64().unwrap_or(0) > 16384 {
         transformed["max_tokens"] = serde_json::json!(16384);
     }
+    // DeepSeek's Anthropic-compatible endpoint enforces a 64-char limit on tool names.
+    if let Some(tools) = transformed.get_mut("tools").and_then(|t| t.as_array_mut()) {
+        for tool in tools.iter_mut() {
+            if let Some(name) = tool.get_mut("name").and_then(|n| n.as_str().map(|s| s.to_string())) {
+                if name.len() > 64 {
+                    let boundary = name.floor_char_boundary(64);
+                    tool["name"] = serde_json::Value::String(name[..boundary].to_string());
+                }
+            }
+        }
+    }
 
     let ds_path = path.replace("/v1/", "/").replace("/v1", "/");
     let uri = format!("https://api.deepseek.com/anthropic{}", ds_path);
